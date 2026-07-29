@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ProxyGit — versioned file proxy for agents</title>
-  <meta name="description" content="Network-attached project filesystem for AI agents and humans. QUIC + WebDAV + MCP. Bring your own network." />
+  <title>ProxyGit — experimental agent-native network filesystem</title>
+  <meta name="description" content="Self-hosted project file proxy for AI agents and humans. QUIC + WebDAV + MCP. MVP — bring your own private network." />
   <style>
     :root {
       --bg: #ffffff;
@@ -161,9 +161,9 @@
     <div class="badge">Open source · MIT · MVP</div>
     <h1>ProxyGit</h1>
     <p class="lead">
-      A versioned <strong>file proxy</strong> for AI agents and humans.
-      Content-addressed blocks over <strong>QUIC</strong>, mounts via <strong>WebDAV</strong>,
-      agent tools via <strong>MCP</strong>. Bring your own network — Tailscale, WireGuard, LAN, or localhost.
+      An experimental <strong>agent-native network filesystem</strong> (MVP).
+      Content-addressed project storage over <strong>QUIC</strong>, mounts via <strong>WebDAV</strong>,
+      agent tools via <strong>MCP</strong>. Bring your own private network — Tailscale, WireGuard, LAN, or localhost.
     </p>
     <div class="actions">
       <a class="btn primary" id="repo-link" href="https://github.com/jlicerio/proxygit">View on GitHub</a>
@@ -179,7 +179,7 @@
         <div>
           <ul>
             <li><strong>Agents</strong> get structured MCP tools instead of shelling <code>cat</code>/<code>sed</code> on a full checkout.</li>
-            <li><strong>Bandwidth</strong> stays low: FastCDC chunks + BLAKE3 — only touched blocks move.</li>
+            <li><strong>Self-hosted combo</strong> in one small package: QUIC + block store + WebDAV + MCP + WAL — not a full JuiceFS/Mutagen replacement.</li>
             <li><strong>Mount friction</strong> drops: WebDAV works without kernel extensions; CLI needs no mount at all.</li>
           </ul>
         </div>
@@ -189,6 +189,16 @@ proxygit-client ls    $SERVER $PROJECT
 proxygit-client mcp   $SERVER $PROJECT   # agent tools on stdio</pre>
         </div>
       </div>
+    </section>
+
+    <section>
+      <h2>Honest MVP limits</h2>
+      <ul>
+        <li><strong>Whole-file writes on the wire today.</strong> Server stores FastCDC/BLAKE3 blocks, but client write + WAL flush still fetch/patch/upload full file bytes. Delta transfer is roadmap.</li>
+        <li><strong>Semantic search is a stub</strong> — BLAKE3 mock embeddings, not a real model.</li>
+        <li><strong>Not git versioning</strong> — content-addressed storage + tarball backups, not branches/merges.</li>
+        <li><strong>No app auth / no conflict merge</strong> — trusted network only; last-writer-wins.</li>
+      </ul>
     </section>
 
     <section>

@@ -1,10 +1,10 @@
 # ProxyGit
 
-**Versioned file proxy for AI-agent and human workflows.**
+**Experimental agent-native network filesystem (MVP).**
 
-ProxyGit lets multiple agents and developers work on the same project tree without
-shipping the whole repo over the network on every read/write. A small Rust server
-stores content-addressed blocks; clients reach them via QUIC, WebDAV, CLI, or MCP.
+ProxyGit lets multiple agents and developers share one remote project tree through
+a small Rust server. Files are stored as content-addressed blocks; clients reach
+them via QUIC, WebDAV, CLI, or MCP. (Wire delta transfer is still roadmap — see limits below.)
 
 ```
   Agent / IDE / shell                 Your LAN or VPN
@@ -18,16 +18,22 @@ stores content-addressed blocks; clients reach them via QUIC, WebDAV, CLI, or MC
 
 ## What problem this solves
 
-| Pain | Without ProxyGit | With ProxyGit |
-|------|------------------|---------------|
+| Pain | Without ProxyGit | With ProxyGit today |
+|------|------------------|----------------------|
 | Agents thrash the filesystem | Every tool call shells out to `cat`/`sed` on a full checkout | MCP tools (`read_file`, `write_file`, …) hit a structured API |
-| Large repos on weak links | Full clone / rsync before work starts | Content-defined chunks (FastCDC + BLAKE3); only touched blocks move |
-| Concurrent agent edits | Ad-hoc shared folders, no journal | Client WAL → async flush; server is source of truth |
+| Shared remote tree | Ad-hoc NFS/SMB/rsync copies | Self-hosted project store over QUIC + optional WebDAV mount |
+| Concurrent agent edits | Uncoordinated shared folders | Client WAL → async flush; **server is source of truth** (last-writer-wins, no merge yet) |
 | Mount friction | Kernel FUSE required everywhere | **WebDAV** (Finder / davfs) and **one-shot CLI** work with zero kexts |
-| “Where is the tree?” | Recursive `find` / `grep` | `.proxygit-index.md` + `get_project_map` in one call |
+| “Where is the tree?” | Recursive `find` / `grep` | `get_project_map` / index helpers in one call |
 
-**In one sentence:** ProxyGit is a network-attached project filesystem optimized for
-agent tool use and incremental sync, not a git host and not a general NAS.
+**In one sentence:** ProxyGit is a small self-hosted **project file proxy** aimed at agent tool use — not a git host, not JuiceFS/Mutagen, and not production multi-tenant storage.
+
+### Honest limits (MVP)
+
+- **Writes are whole-file today.** FastCDC+BLAKE3 content-address the stored blocks on the server, but the client write/WAL flush path still uploads the full file contents (fetch → patch locally → write back). True delta/VCDIFF transfer is roadmap.
+- **“Semantic search” is a stub.** Embeddings are deterministic BLAKE3 mock vectors, not a real language model.
+- **“Versioned” ≠ git history.** You get content-addressed blocks + explicit tarball backups, not per-change branches/merges.
+- **No app auth / no conflict merge.** Trusted network only; concurrent writers are last-writer-wins.
 
 ### What it is not
 
@@ -44,9 +50,12 @@ agent tool use and incremental sync, not a git host and not a general NAS.
 | MCP agent interface (stdio + TCP `:8082`) | ✅ |
 | WebDAV native mount (`:3900`) | ✅ |
 | FUSE mount | Optional (`--features fuse`, macOS/Linux) |
-| Semantic search (content-hash MVP embeddings) | ✅ MVP |
-| Windows server / WinFSP | ❌ not yet |
-| Garage S3 backend, A2A bus, auth | Roadmap — see [`ARCHITECTURE-ROADMAP.md`](ARCHITECTURE-ROADMAP.md) |
+| Content-addressed block storage (FastCDC + BLAKE3) | ✅ |
+| Wire delta transfer (only changed bytes on the network) | ❌ roadmap |
+| Real semantic embeddings (BGE/ONNX) | ❌ mock hash embeddings only |
+| Conflict resolution / CRDT / OT | ❌ last-writer-wins |
+| Client auth (mTLS / tokens) | ❌ trusted-network only |
+| Garage S3 backend, A2A bus | Roadmap — see [`ARCHITECTURE-ROADMAP.md`](ARCHITECTURE-ROADMAP.md) |
 
 ### Platform matrix
 
@@ -167,7 +176,7 @@ When the client runs in MCP mode, agents get:
 | `list_directory` | Directory listing |
 | `stat` | Size / mtime / hash metadata |
 | `get_project_map` | Full tree in one round-trip |
-| `semantic_search` | Embedding / content-hash search (MVP) |
+| `semantic_search` | **MVP stub** — hash-embedding nearest neighbors, not true semantics |
 
 A checked-out ProxyGit workspace may also contain a `.proxygit` TOML manifest so
 agents can discover `server`, `uuid`, and MCP endpoint without hard-coding hosts.
