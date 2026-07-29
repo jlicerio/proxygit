@@ -1,0 +1,40 @@
+[workspace]
+members = [
+    "crates/proxygit-client",
+    "crates/proxygit-server",
+    "crates/proxygit-common",
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1.38", features = ["full"] }
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+blake3 = "1.5"
+rusqlite = { version = "0.31", features = ["bundled"] }
+quinn = "0.11"
+quinn-proto = "0.11"
+rustls = { version = "0.23", features = ["ring"] }
+rcgen = "0.13"
+socket2 = "0.5"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+walkdir = "2.5"
+hex = "0.4"
+base64 = "0.22"
+tempfile = "3.10"
+tar = "0.4"
+flate2 = "1.0"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Versioned file proxy for AI-agent and human workflows (QUIC + WebDAV + MCP)"
+repository = "https://github.com/proxygit/proxygit"
+homepage = "https://github.com/proxygit/proxygit"
+readme = "README.md"
+keywords = ["quic", "webdav", "mcp", "vfs", "agent"]
+categories = ["command-line-utilities", "filesystem", "network-programming"]

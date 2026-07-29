@@ -1,0 +1,35 @@
+# ProxyGit Server — Docker Compose
+#
+# Start:
+#   docker compose -f docker/docker-compose.yml up -d --build
+# Logs:
+#   docker compose -f docker/docker-compose.yml logs -f
+# Stop:
+#   docker compose -f docker/docker-compose.yml down
+#
+# SECURITY: There is no application auth. QUIC has no client certificates;
+# WebDAV is plain HTTP. Only publish these ports on localhost or a private
+# overlay (Tailscale/WireGuard/VPC). Do not expose 8080/udp or 3900/tcp to
+# the public internet.
+
+services:
+  proxygit-server:
+    build:
+      context: ..
+      dockerfile: docker/server.Dockerfile
+    image: proxygit-server:latest
+    container_name: proxygit-server
+    restart: unless-stopped
+    ports:
+      # Host binds default to all interfaces — override e.g. "127.0.0.1:8080:8080/udp"
+      - "8080:8080/udp"
+      - "3900:3900"
+    environment:
+      - PROXYGIT_LISTEN=0.0.0.0:8080
+      - PROXYGIT_WEBDAV_LISTEN=0.0.0.0:3900
+      - PROXYGIT_DATA_DIR=/data
+    volumes:
+      - proxygit-data:/data
+
+volumes:
+  proxygit-data:

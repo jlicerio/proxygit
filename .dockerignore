@@ -1,0 +1,6 @@
+target/
+.git/
+*.swp
+*.swo
+*~
+.DS_Store
