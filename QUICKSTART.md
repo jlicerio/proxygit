@@ -21,8 +21,15 @@ cargo build --release
 
 Produces:
 
-- `target/release/proxygit-server`
-- `target/release/proxygit-client`
+- `./target/release/proxygit-server`
+- `./target/release/proxygit-client`
+
+Optional: put them on your `PATH`, or keep using the `./target/release/…` paths below.
+
+```bash
+export PATH="$PWD/target/release:$PATH"
+# now bare `proxygit-client` / `proxygit-server` also work
+```
 
 ## 2. Run the server
 
@@ -99,6 +106,8 @@ PROJECT=$(uuidgen | tr '[:upper:]' '[:lower:]')
 PROJECT=00000000-0000-0000-0000-000000000001
 
 SERVER=127.0.0.1:8080   # or your-server:8080
+CLIENT=./target/release/proxygit-client
+SERVER_HOST=127.0.0.1   # host only — used by backup helpers (WebDAV :3900)
 ```
 
 The server creates index state for a project on first write.
@@ -107,22 +116,21 @@ The server creates index state for a project on first write.
 
 ### A. One-shot CLI (no mount, no FUSE)
 
-```bash
-proxygit-client write  "$SERVER" "$PROJECT" src/main.rs 'fn main() { println!("hi"); }'
-proxygit-client ls     "$SERVER" "$PROJECT"
-proxygit-client cat    "$SERVER" "$PROJECT" src/main.rs
-proxygit-client stat   "$SERVER" "$PROJECT" src/main.rs
-proxygit-client search "$SERVER" "$PROJECT" "main entrypoint" 5
+$CLIENT write  "$SERVER" "$PROJECT" src/main.rs 'fn main() { println!("hi"); }'
+$CLIENT ls     "$SERVER" "$PROJECT"
+$CLIENT cat    "$SERVER" "$PROJECT" src/main.rs
+$CLIENT stat   "$SERVER" "$PROJECT" src/main.rs
+$CLIENT search "$SERVER" "$PROJECT" "main entrypoint" 5
 
 # backups via WebDAV helper routes (server host, not :8080)
-proxygit-client backup create  "$SERVER_HOST" "$PROJECT"
-proxygit-client backup list    "$SERVER_HOST" "$PROJECT"
+$CLIENT backup create  "$SERVER_HOST" "$PROJECT"
+$CLIENT backup list    "$SERVER_HOST" "$PROJECT"
 ```
 
 `write` with no text argument reads stdin:
 
 ```bash
-proxygit-client write "$SERVER" "$PROJECT" notes.md < ./local-notes.md
+$CLIENT write "$SERVER" "$PROJECT" notes.md < ./local-notes.md
 ```
 
 ### B. WebDAV mount (no kernel extension)
@@ -142,8 +150,7 @@ Finder: **Go → Connect to Server** → `http://127.0.0.1:3900/webdav/<project-
 
 Stdio (typical for Claude / Cursor / custom runners):
 
-```bash
-proxygit-client mcp "$SERVER" "$PROJECT"
+./target/release/proxygit-client mcp "$SERVER" "$PROJECT"
 ```
 
 The process speaks JSON-RPC 2.0 MCP on stdin/stdout. Tools include
@@ -157,12 +164,11 @@ by default (loopback only).
 
 Requires a FUSE-enabled build and platform support:
 
-```bash
 cargo build --release -p proxygit-client --features fuse
-proxygit-client mount "$SERVER" "$PROJECT"
+./target/release/proxygit-client mount "$SERVER" "$PROJECT"
 # default mount point: /tmp/proxygit/mount
-proxygit-client status
-proxygit-client unmount
+./target/release/proxygit-client status
+./target/release/proxygit-client unmount
 ```
 
 ## 5. `.proxygit` manifest (optional, for agents)
