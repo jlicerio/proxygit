@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ProxyGit — versioned file proxy for agents</title>
+  <meta name="description" content="Network-attached project filesystem for AI agents and humans. QUIC + WebDAV + MCP. Bring your own network." />
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #121821;
+      --text: #e7eef7;
+      --muted: #9fb0c3;
+      --accent: #5eead4;
+      --accent2: #93c5fd;
+      --warn: #fbbf24;
+      --border: #243041;
+      --code: #0f172a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: radial-gradient(1200px 600px at 10% -10%, #132033 0%, var(--bg) 55%);
+      color: var(--text);
+    }
+    a { color: var(--accent2); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    header, main, footer { width: min(980px, calc(100% - 2rem)); margin: 0 auto; }
+    header { padding: 2.5rem 0 1rem; }
+    .badge {
+      display: inline-block;
+      font-size: 12px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--accent);
+      border: 1px solid #134e4a;
+      background: #042f2e;
+      padding: .25rem .55rem;
+      border-radius: 999px;
+      margin-bottom: .8rem;
+    }
+    h1 { font-size: clamp(2rem, 4vw, 2.7rem); line-height: 1.15; margin: 0 0 .6rem; }
+    .lead { color: var(--muted); font-size: 1.12rem; max-width: 46rem; }
+    .actions { display: flex; flex-wrap: wrap; gap: .7rem; margin: 1.4rem 0 0; }
+    .btn {
+      display: inline-flex; align-items: center; gap: .4rem;
+      border-radius: 10px; padding: .7rem 1rem; font-weight: 600;
+      border: 1px solid var(--border);
+    }
+    .btn.primary { background: linear-gradient(180deg, #2dd4bf, #0f766e); color: #042f2e; border-color: #14b8a6; }
+    .btn.ghost { background: var(--panel); color: var(--text); }
+    section {
+      background: color-mix(in srgb, var(--panel) 92%, black);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.25rem 1.35rem 1.4rem;
+      margin: 1rem 0;
+    }
+    h2 { margin: 0 0 .8rem; font-size: 1.25rem; }
+    h3 { margin: 1.1rem 0 .5rem; font-size: 1.02rem; color: var(--accent2); }
+    p, li { color: var(--muted); }
+    strong { color: var(--text); }
+    table { width: 100%; border-collapse: collapse; font-size: .95rem; }
+    th, td { border-bottom: 1px solid var(--border); padding: .55rem .4rem; text-align: left; vertical-align: top; }
+    th { color: var(--text); font-weight: 600; }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .88rem;
+    }
+    pre {
+      background: var(--code);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+      overflow: auto;
+      color: #dbeafe;
+    }
+    .grid { display: grid; gap: 1rem; }
+    @media (min-width: 820px) { .grid.two { grid-template-columns: 1fr 1fr; } }
+    .mermaid {
+      background: #0a1220;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+      overflow-x: auto;
+    }
+    .warn {
+      border-left: 3px solid var(--warn);
+      padding-left: .8rem;
+      color: #fde68a;
+    }
+    footer { color: var(--muted); padding: 1.5rem 0 3rem; font-size: .92rem; }
+    .ok { color: #6ee7b7; }
+    .mid { color: #fcd34d; }
+    .no { color: #fca5a5; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="badge">Open source · Apache-2.0 · MVP</div>
+    <h1>ProxyGit</h1>
+    <p class="lead">
+      A versioned <strong>file proxy</strong> for AI agents and humans.
+      Content-addressed blocks over <strong>QUIC</strong>, mounts via <strong>WebDAV</strong>,
+      agent tools via <strong>MCP</strong>. Bring your own network — Tailscale, WireGuard, LAN, or localhost.
+    </p>
+    <div class="actions">
+      <a class="btn primary" id="repo-link" href="https://github.com/jlicerio/proxygit">View on GitHub</a>
+      <a class="btn ghost" href="https://github.com/jlicerio/proxygit/blob/main/QUICKSTART.md">Quickstart</a>
+      <a class="btn ghost" href="https://github.com/jlicerio/proxygit/blob/main/README.md">README</a>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>What it solves</h2>
+      <div class="grid two">
+        <div>
+          <ul>
+            <li><strong>Agents</strong> get structured MCP tools instead of shelling <code>cat</code>/<code>sed</code> on a full checkout.</li>
+            <li><strong>Bandwidth</strong> stays low: FastCDC chunks + BLAKE3 — only touched blocks move.</li>
+            <li><strong>Mount friction</strong> drops: WebDAV works without kernel extensions; CLI needs no mount at all.</li>
+          </ul>
+        </div>
+        <div>
+          <pre>proxygit-client write $SERVER $PROJECT src/main.rs 'fn main() {}'
+proxygit-client ls    $SERVER $PROJECT
+proxygit-client mcp   $SERVER $PROJECT   # agent tools on stdio</pre>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Architecture</h2>
+      <div class="mermaid">
+flowchart TB
+  subgraph ClientHost["Client machine"]
+    Agent["AI agent / IDE"]
+    CLI["proxygit-client CLI"]
+    MCP["MCP stdio / :8082"]
+    DAVC["WebDAV client\nFinder · davfs · Map Drive"]
+    FUSE["FUSE mount optional\nmacOS / Linux"]
+  end
+
+  subgraph Net["Your network path"]
+    N["localhost · Tailscale · WireGuard · LAN · VPC"]
+  end
+
+  subgraph ServerHost["Server — Linux or macOS"]
+    Q["proxygit-server\nQUIC UDP :8080"]
+    W["WebDAV HTTP TCP :3900\nno app auth yet"]
+    IDX[("SQLite project index")]
+    BLK[("FastCDC block store")]
+  end
+
+  Agent --> MCP --> CLI
+  Agent --> DAVC
+  CLI --> N
+  DAVC --> N
+  FUSE --> N
+  N --> Q
+  N --> W
+  Q --> IDX
+  Q --> BLK
+  W --> IDX
+  W --> BLK
+      </div>
+    </section>
+
+    <section>
+      <h2>Configure the network your way</h2>
+      <p>ProxyGit is transport-address based. It does not embed Tailscale. If packets reach the server, it works.</p>
+      <div class="mermaid">
+flowchart LR
+  C["Clients"] --> CH{"How do you reach the box?"}
+  CH -->|Same laptop| LO["127.0.0.1:8080"]
+  CH -->|Tailscale| TS["magicdns-name:8080\nor 100.x.y.z:8080"]
+  CH -->|WireGuard / LAN| WG["10.x.y.z:8080"]
+  CH -->|Cloud VPC| VPC["private IP:8080"]
+  LO --> S["proxygit-server"]
+  TS --> S
+  WG --> S
+  VPC --> S
+      </div>
+      <h3>Ports</h3>
+      <table>
+        <thead><tr><th>Port</th><th>Proto</th><th>Who uses it</th></tr></thead>
+        <tbody>
+          <tr><td><code>8080</code></td><td>UDP</td><td>QUIC — CLI, MCP, FUSE</td></tr>
+          <tr><td><code>3900</code></td><td>TCP</td><td>WebDAV mounts / backups helpers</td></tr>
+          <tr><td><code>8082</code></td><td>TCP</td><td>Optional MCP TCP on the <em>client</em> (default loopback)</td></tr>
+        </tbody>
+      </table>
+      <p class="warn"><strong>Security:</strong> no application auth yet. WebDAV is plain HTTP; QUIC has no client certs. Keep this on localhost or a private overlay — not the public internet.</p>
+    </section>
+
+    <section>
+      <h2>Platform matrix</h2>
+      <table>
+        <thead>
+          <tr><th>Capability</th><th>macOS</th><th>Linux</th><th>Windows</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Run <strong>server</strong></td><td class="ok">Yes</td><td class="ok">Yes (primary)</td><td class="no">Not yet</td></tr>
+          <tr><td>CLI + MCP client</td><td class="ok">Yes</td><td class="ok">Yes</td><td class="mid">Likely builds; not CI-tested</td></tr>
+          <tr><td>WebDAV client</td><td class="ok">Finder</td><td class="ok">davfs2</td><td class="ok">Map Network Drive</td></tr>
+          <tr><td>FUSE / WinFSP mount</td><td class="ok">Optional macFUSE</td><td class="ok">Optional FUSE3</td><td class="no">WinFSP not implemented</td></tr>
+        </tbody>
+      </table>
+      <p>Windows is a <strong>client</strong> today (WebDAV / CLI). Host the server on Linux or macOS.</p>
+    </section>
+
+    <section>
+      <h2>Minimal local demo</h2>
+      <pre># build
+cargo build --release
+
+# server (loopback)
+export PROXYGIT_DATA_DIR=$PWD/data
+export PROXYGIT_LISTEN=127.0.0.1:8080
+export PROXYGIT_WEBDAV_LISTEN=127.0.0.1:3900
+./target/release/proxygit-server &
+
+# pin this server's cert
+export PROXYGIT_SERVER_CERT=$PWD/data/server_cert.der
+PROJECT=00000000-0000-0000-0000-000000000001
+SERVER=127.0.0.1:8080
+
+./target/release/proxygit-client write "$SERVER" "$PROJECT" hello.txt 'hi'
+./target/release/proxygit-client cat   "$SERVER" "$PROJECT" hello.txt</pre>
+      <p>Full paths, Docker localhost overlay, and remote rsync excludes: <a href="https://github.com/jlicerio/proxygit/blob/main/QUICKSTART.md">QUICKSTART.md</a>.</p>
+    </section>
+
+    <section>
+      <h2>Access patterns</h2>
+      <div class="mermaid">
+flowchart TB
+  P["Project UUID on server"] --> A["A · CLI one-shot\nno mount"]
+  P --> B["B · WebDAV mount\nFinder / davfs / Map Drive"]
+  P --> C["C · MCP tools\nread_file write_file …"]
+  P --> D["D · FUSE\nmacOS/Linux optional"]
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div>ProxyGit · Apache-2.0 · Not a git host · Trusted-network deploy only</div>
+    <div>Diagrams render via Mermaid in-page. Source of truth is the GitHub repo.</div>
+  </footer>
+
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "dark",
+      securityLevel: "strict",
+      flowchart: { curve: "basis", htmlLabels: true }
+    });
+  </script>
+</body>
+</html>

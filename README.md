@@ -43,11 +43,26 @@ agent tool use and incremental sync, not a git host and not a general NAS.
 | CLI: `ls` / `cat` / `stat` / `write` / `search` / `backup` | ✅ |
 | MCP agent interface (stdio + TCP `:8082`) | ✅ |
 | WebDAV native mount (`:3900`) | ✅ |
-| FUSE mount | Optional (`--features fuse`, needs macFUSE / libfuse3) |
+| FUSE mount | Optional (`--features fuse`, macOS/Linux) |
 | Semantic search (content-hash MVP embeddings) | ✅ MVP |
+| Windows server / WinFSP | ❌ not yet |
 | Garage S3 backend, A2A bus, auth | Roadmap — see [`ARCHITECTURE-ROADMAP.md`](ARCHITECTURE-ROADMAP.md) |
 
-**Build gate (verified):** `cargo check --release`, unit + smoke tests, `cargo fmt --check`.
+### Platform matrix
+
+| | macOS | Linux | Windows |
+|--|-------|-------|---------|
+| Server | ✅ | ✅ primary | ❌ |
+| CLI + MCP client | ✅ | ✅ | 🟡 untested build |
+| WebDAV client | ✅ Finder | ✅ davfs2 | ✅ Map Network Drive |
+| FUSE | ✅ optional | ✅ optional | ❌ |
+
+Network path is **yours**: localhost, Tailscale, WireGuard, LAN, or VPC. ProxyGit
+only needs reachability to UDP 8080 (+ TCP 3900 for WebDAV). See the diagrams in
+[`docs/site/`](docs/site/).
+
+**Build gate (verified):** `cargo check --release`, unit + smoke tests, `cargo fmt --check`,
+plus a local CLI + WebDAV + MCP smoke of the documented quickstart path.
 
 ## Quick start (local, no remote host)
 
@@ -77,6 +92,11 @@ export PROXYGIT_WEBDAV_LISTEN=127.0.0.1:3900
 ```
 
 On first start the server writes a self-signed cert under `$PROXYGIT_DATA_DIR/server_cert.der`.
+Pin it for the client (avoids stale `~/.config/proxygit/server_cert.der`):
+
+```bash
+export PROXYGIT_SERVER_CERT="$PWD/data/server_cert.der"
+```
 
 > **Bind defaults:** if you omit the env vars, both QUIC and WebDAV listen on
 > `0.0.0.0`. That is fine on a trusted VPN/lab link; **do not expose to the public
@@ -85,31 +105,34 @@ On first start the server writes a self-signed cert under `$PROXYGIT_DATA_DIR/se
 ### 3. Or run via Docker
 
 ```bash
+# all host interfaces (private network / lab)
 docker compose -f docker/docker-compose.yml up -d --build
-docker compose -f docker/docker-compose.yml logs -f
+
+# loopback only (laptop)
+docker compose -f docker/docker-compose.localhost.yml up -d --build
+
+docker compose -f docker/docker-compose.localhost.yml logs -f
 ```
 
-Maps host UDP `8080` (QUIC) and TCP `3900` (WebDAV) to the container. Persist data
-in the `proxygit-data` volume.
+Maps host UDP `8080` (QUIC) and TCP `3900` (WebDAV). Persist data in `proxygit-data`.
+Host publish is controlled by Compose `ports:`, not only `PROXYGIT_*_LISTEN`.
 
 ### 4. Talk to it
-
-Pick any project UUID (the server creates the project index on first write):
 
 ```bash
 PROJECT=00000000-0000-0000-0000-000000000001
 SERVER=127.0.0.1:8080
+export PROXYGIT_SERVER_CERT="$PWD/data/server_cert.der"
 
-# CLI
 ./target/release/proxygit-client write "$SERVER" "$PROJECT" README.md "hello from proxygit"
 ./target/release/proxygit-client ls    "$SERVER" "$PROJECT"
 ./target/release/proxygit-client cat   "$SERVER" "$PROJECT" README.md
 ./target/release/proxygit-client stat  "$SERVER" "$PROJECT" README.md
 
-# MCP (stdio) — point your agent runner at this process
+# MCP (stdio)
 ./target/release/proxygit-client mcp "$SERVER" "$PROJECT"
 
-# WebDAV (macOS example)
+# WebDAV (macOS)
 mkdir -p /tmp/pg-mount
 mount_webdav "http://127.0.0.1:3900/webdav/$PROJECT" /tmp/pg-mount
 ```

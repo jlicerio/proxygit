@@ -1,0 +1,26 @@
+# Laptop-safe stack: publish only on host loopback.
+# Usage (standalone — do not merge with the default compose ports):
+#   docker compose -f docker/docker-compose.localhost.yml up -d --build
+#
+# SECURITY: still no application auth. Loopback publish reduces accidental LAN exposure.
+
+services:
+  proxygit-server:
+    build:
+      context: ..
+      dockerfile: docker/server.Dockerfile
+    image: proxygit-server:latest
+    container_name: proxygit-server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080/udp"
+      - "127.0.0.1:3900:3900"
+    environment:
+      - PROXYGIT_LISTEN=0.0.0.0:8080
+      - PROXYGIT_WEBDAV_LISTEN=0.0.0.0:3900
+      - PROXYGIT_DATA_DIR=/data
+    volumes:
+      - proxygit-data:/data
+
+volumes:
+  proxygit-data:

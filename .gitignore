@@ -34,3 +34,4 @@ AGENTS.local.md
 /smoke-*.txt
 /cli-test-*.txt
 /hermes-*.txt
+/data-smoke/

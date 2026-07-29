@@ -1,16 +1,27 @@
 # ProxyGit Quickstart
 
 Agnostic setup — no assumed hostnames, VPN products, or personal paths.
-Replace `$SERVER_HOST` with `127.0.0.1` (local) or your private-network hostname/IP.
+Replace `$SERVER_HOST` with `127.0.0.1` (local) or your private-network hostname/IP
+(Tailscale, WireGuard, LAN, VPC — any reachable path).
+
+## Platform support (honest)
+
+| Role | macOS | Linux | Windows |
+|------|-------|-------|---------|
+| **Server** (`proxygit-server`) | ✅ local dev | ✅ primary (binary or Docker) | ❌ not yet (Unix APIs in server) |
+| **CLI** `ls/cat/stat/write` | ✅ | ✅ | 🟡 should build; not CI-tested |
+| **MCP** stdio agent tools | ✅ | ✅ | 🟡 should build; not CI-tested |
+| **WebDAV** as client | ✅ Finder / `mount_webdav` | ✅ davfs2 | ✅ Map Network Drive → Linux/mac server |
+| **FUSE mount** | ✅ optional (`--features fuse` + macFUSE) | ✅ optional (FUSE3) | ❌ WinFSP not implemented (installer stub only) |
+
+**Bottom line:** run the **server on Linux or macOS**. Clients on Mac/Linux are first-class.
+Windows is a **WebDAV/CLI client** story today, not a server or FUSE host.
 
 ## Prerequisites
 
 - Rust 1.78+ (to build from source)
 - Optional: Docker + Docker Compose (containerized server)
-- Optional mounts:
-  - macOS WebDAV: built-in `mount_webdav` / Finder → Connect to Server
-  - Linux WebDAV: `davfs2`
-  - FUSE (optional): macFUSE (`brew install --cask macfuse`) or Linux FUSE3
+- Optional mounts as in the table above
 
 ## 1. Build
 
@@ -24,11 +35,10 @@ Produces:
 - `./target/release/proxygit-server`
 - `./target/release/proxygit-client`
 
-Optional: put them on your `PATH`, or keep using the `./target/release/…` paths below.
+Optional PATH:
 
 ```bash
 export PATH="$PWD/target/release:$PATH"
-# now bare `proxygit-client` / `proxygit-server` also work
 ```
 
 ## 2. Run the server
@@ -56,16 +66,26 @@ WebDAV HTTP server ready on http://127.0.0.1:3900
 
 Self-signed TLS material for QUIC is created at `$PROXYGIT_DATA_DIR/server_cert.der` on first boot.
 
+Pin that cert for the client (required — a stale `~/.config/proxygit/server_cert.der` will fail with `BadSignature`):
+
+```bash
+export PROXYGIT_SERVER_CERT="$PROXYGIT_DATA_DIR/server_cert.der"
+# or: cp "$PROXYGIT_DATA_DIR/server_cert.der" ~/.config/proxygit/server_cert.der
+```
+
 ### Option B — Docker Compose
 
 From the repo root:
 
 ```bash
+# Trusted private network / lab (publishes on all host interfaces)
 docker compose -f docker/docker-compose.yml up -d --build
+
+# Laptop-only: publish only on loopback
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.localhost.yml up -d --build
+
 docker compose -f docker/docker-compose.yml logs -f proxygit-server
 ```
-
-Default publish:
 
 | Port | Proto | Service |
 |------|-------|---------|
@@ -74,30 +94,41 @@ Default publish:
 
 Data persists in the Docker volume `proxygit-data`.
 
-To point Compose at a specific host interface, edit `PROXYGIT_LISTEN` /
-`PROXYGIT_WEBDAV_LISTEN` in `docker/docker-compose.yml` (defaults are `0.0.0.0`
-inside the container — only safe on trusted networks; see [Security](README.md#security)).
+**Ports vs bind address:**
+
+- Compose `ports:` controls **which host interfaces** publish the container ports.
+- `PROXYGIT_LISTEN` / `PROXYGIT_WEBDAV_LISTEN` only change the **bind inside the container**.
+- For a safe laptop demo, use `docker-compose.localhost.yml` (host `127.0.0.1:…`), not only env binds.
 
 ### Option C — remote Linux host over SSH
 
-Any SSH-reachable Linux box works. Example pattern:
+Any SSH-reachable Linux box works (Tailscale, WireGuard, LAN, public bastion — your choice).
 
 ```bash
-rsync -av --exclude target/ --exclude .git/ ./ user@your-server:~/proxygit/
+rsync -av \
+  --exclude target/ \
+  --exclude .git/ \
+  --exclude .sc/ \
+  --exclude data/ \
+  --exclude data-smoke/ \
+  --exclude AGENTS.local.md \
+  --exclude .proxygit.local.toml \
+  --exclude '*.der' \
+  --exclude '*.pem' \
+  ./ user@your-server:~/proxygit/
 ssh user@your-server 'cd ~/proxygit && docker compose -f docker/docker-compose.yml up -d --build'
 ```
 
-Copy the server cert for the QUIC client if you verify pins locally:
+Copy the server cert for the QUIC client:
 
 ```bash
 ssh user@your-server 'docker cp proxygit-server:/data/server_cert.der /tmp/server_cert.der'
 mkdir -p ~/.config/proxygit
 scp user@your-server:/tmp/server_cert.der ~/.config/proxygit/server_cert.der
+# or: export PROXYGIT_SERVER_CERT=~/.config/proxygit/server_cert.der
 ```
 
 ## 3. Choose a project id
-
-ProxyGit addresses projects by UUID. Generate one or use a fixed lab id:
 
 ```bash
 # random
@@ -105,9 +136,10 @@ PROJECT=$(uuidgen | tr '[:upper:]' '[:lower:]')
 # or fixed for demos
 PROJECT=00000000-0000-0000-0000-000000000001
 
-SERVER=127.0.0.1:8080   # or your-server:8080
+SERVER=127.0.0.1:8080          # or your-server:8080 on your private network
 CLIENT=./target/release/proxygit-client
-SERVER_HOST=127.0.0.1   # host only — used by backup helpers (WebDAV :3900)
+SERVER_HOST=127.0.0.1          # host only — backup helpers use WebDAV :3900
+export PROXYGIT_SERVER_CERT="${PROXYGIT_SERVER_CERT:-$PWD/data/server_cert.der}"
 ```
 
 The server creates index state for a project on first write.
@@ -139,32 +171,25 @@ $CLIENT write "$SERVER" "$PROJECT" notes.md < ./local-notes.md
 ```bash
 # macOS
 mkdir -p /tmp/my-project
-mount_webdav "http://127.0.0.1:3900/webdav/$PROJECT" /tmp/my-project
+mount_webdav "http://${SERVER_HOST}:3900/webdav/$PROJECT" /tmp/my-project
 
 # Linux (davfs2)
-sudo mount -t davfs "http://127.0.0.1:3900/webdav/$PROJECT" /mnt/my-project
+sudo mount -t davfs "http://${SERVER_HOST}:3900/webdav/$PROJECT" /mnt/my-project
 ```
 
-Finder: **Go → Connect to Server** → `http://127.0.0.1:3900/webdav/<project-uuid>`.
+- **macOS Finder:** Go → Connect to Server → `http://<host>:3900/webdav/<uuid>`
+- **Windows:** Map Network Drive → `http://<host>:3900/webdav/<uuid>` (server still runs on Linux/mac)
 
 ### C. MCP for AI agents
-
-Stdio (typical for Claude / Cursor / custom runners):
 
 ```bash
 ./target/release/proxygit-client mcp "$SERVER" "$PROJECT"
 ```
 
-The process speaks JSON-RPC 2.0 MCP on stdin/stdout. Tools include
-`read_file`, `write_file`, `list_directory`, `stat`, `get_project_map`,
-and `semantic_search`.
+JSON-RPC 2.0 MCP on stdin/stdout. Tools: `read_file`, `write_file`,
+`list_directory`, `stat`, `get_project_map`, `semantic_search`.
 
-When the client also brings up its TCP MCP listener, it binds `localhost:8082`
-by default (loopback only).
-
-### D. FUSE mount (optional)
-
-Requires a FUSE-enabled build and platform support:
+### D. FUSE mount (optional, macOS/Linux)
 
 ```bash
 cargo build --release -p proxygit-client --features fuse
@@ -174,10 +199,53 @@ cargo build --release -p proxygit-client --features fuse
 ./target/release/proxygit-client unmount
 ```
 
-## 5. `.proxygit` manifest (optional, for agents)
+## 5. Network topology (bring your own path)
 
-A workspace root may include a TOML manifest so agents auto-discover connection
-info. **Use placeholders — never commit personal tailnet IPs.**
+ProxyGit does **not** require Tailscale. It needs IP reachability to:
+
+- UDP **8080** (QUIC client ↔ server)
+- TCP **3900** (WebDAV, optional)
+- TCP **8082** only if you expose the client’s local MCP TCP listener (default loopback)
+
+```mermaid
+flowchart LR
+  subgraph clients [Clients — Mac / Linux / Windows]
+    CLI[CLI verbs]
+    MCP[MCP agents]
+    DAV[WebDAV mount]
+  end
+
+  subgraph path [Your network path]
+    TS[Tailscale / WireGuard]
+    LAN[LAN / VPC]
+    LO[localhost]
+  end
+
+  subgraph server [Server — Linux or macOS]
+    Q[QUIC :8080/udp]
+    W[WebDAV :3900/tcp]
+    S[(SQLite + blocks)]
+  end
+
+  CLI --> path
+  MCP --> path
+  DAV --> path
+  path --> Q
+  path --> W
+  Q --> S
+  W --> S
+```
+
+Pick one path, put that hostname in `$SERVER` / WebDAV URLs. Examples:
+
+| Setup | `$SERVER` example | Notes |
+|-------|-------------------|--------|
+| Same machine | `127.0.0.1:8080` | safest demo |
+| Tailscale | `my-box:8080` or `100.x.y.z:8080` | your tailnet names/IPs |
+| WireGuard / LAN | `10.0.0.5:8080` | any private route |
+| SSH tunnel only | `127.0.0.1:8080` after `ssh -L` | no UDP tunnel by default — prefer VPN for QUIC |
+
+## 6. `.proxygit` manifest (optional, for agents)
 
 ```toml
 [project]
@@ -195,21 +263,16 @@ tools = ["read_file", "write_file", "list_directory", "stat", "get_project_map",
 url = "http://127.0.0.1:3900/webdav/00000000-0000-0000-0000-000000000001/"
 ```
 
-Agent flow:
-
-1. Read `.proxygit` → server, uuid, MCP endpoint  
-2. `tools/list` on MCP  
-3. Use MCP file tools (prefer over shelling out to the mount)
-
-## 6. Environment reference
+## 7. Environment reference
 
 | Variable | Default | Notes |
 |----------|---------|--------|
 | `PROXYGIT_DATA_DIR` | binary: `/tmp/proxygit-server/data`; Docker: `/data` | indexes, blocks, certs, backups |
-| `PROXYGIT_LISTEN` | `0.0.0.0:8080` | QUIC; prefer `127.0.0.1` locally |
-| `PROXYGIT_WEBDAV_LISTEN` | `0.0.0.0:3900` | WebDAV HTTP; **no auth** |
+| `PROXYGIT_LISTEN` | `0.0.0.0:8080` | QUIC bind **inside** process/container |
+| `PROXYGIT_WEBDAV_LISTEN` | `0.0.0.0:3900` | WebDAV bind; **no auth** |
+| `PROXYGIT_SERVER_CERT` | search path | Client pin to server’s `server_cert.der` |
 
-## 7. Feature checklist
+## 8. Feature checklist
 
 | Feature | Status |
 |---------|--------|
@@ -217,23 +280,25 @@ Agent flow:
 | CLI verbs (`ls` / `cat` / `stat` / `write` / `search`) | ✅ |
 | MCP (stdio + optional TCP) | ✅ |
 | WebDAV native mount | ✅ |
-| FUSE mount | Optional feature |
+| FUSE mount | Optional, macOS/Linux |
 | Server-side backup create/list/restore | ✅ |
+| Windows server / WinFSP | Future |
 | Object-store backend (Garage/S3) | Future |
 | Application-level auth | Future — trusted network only today |
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Check |
 |---------|--------|
-| Client can't connect | UDP 8080 open? Correct `host:port`? Firewall allowing QUIC/UDP? |
+| Client can't connect | UDP 8080 open on your path? Correct `host:port`? |
+| `invalid peer certificate: BadSignature` | Stale cert. `export PROXYGIT_SERVER_CERT=$PROXYGIT_DATA_DIR/server_cert.der` for **this** server |
 | WebDAV mount fails | TCP 3900 reachable? URL includes `/webdav/<uuid>`? |
-| Empty `ls` | No files written yet for that UUID — `write` first |
-| Cert errors | Copy `server_cert.der` from the server data dir, or use a client path that trusts the generated cert |
-| Tests fail on macOS paths | Run with `TMPDIR=/tmp` |
+| Empty `ls` | No files yet for that UUID — `write` first |
+| Tests fail on macOS paths | `TMPDIR=/tmp cargo test …` |
 
-## 9. Next reading
+## 10. Next reading
 
-- [`README.md`](README.md) — problem statement & security posture  
-- [`SPEC.md`](SPEC.md) — protocols, MCP schema, milestones  
-- [`ARCHITECTURE-ROADMAP.md`](ARCHITECTURE-ROADMAP.md) — known gaps & priorities  
+- [`README.md`](README.md) — problem statement & security  
+- [`docs/site/`](docs/site/) — share landing + diagrams  
+- [`SPEC.md`](SPEC.md) — protocols  
+- [`ARCHITECTURE-ROADMAP.md`](ARCHITECTURE-ROADMAP.md) — gaps  
