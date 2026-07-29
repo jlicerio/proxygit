@@ -7,93 +7,153 @@
   <meta name="description" content="Network-attached project filesystem for AI agents and humans. QUIC + WebDAV + MCP. Bring your own network." />
   <style>
     :root {
-      --bg: #0b0f14;
-      --panel: #121821;
-      --text: #e7eef7;
-      --muted: #9fb0c3;
-      --accent: #5eead4;
-      --accent2: #93c5fd;
-      --warn: #fbbf24;
-      --border: #243041;
-      --code: #0f172a;
+      --bg: #ffffff;
+      --canvas: #f6f8fa;
+      --panel: #ffffff;
+      --text: #1f2328;
+      --muted: #59636e;
+      --accent: #0969da;
+      --accent-hover: #0550ae;
+      --success: #1a7f37;
+      --warn-bg: #fff8c5;
+      --warn-border: #d4a72c;
+      --warn-text: #7d4e00;
+      --border: #d1d9e0;
+      --border-muted: #e6eaef;
+      --code-bg: #f6f8fa;
+      --code-text: #1f2328;
+      --shadow: 0 1px 0 rgba(31, 35, 40, 0.04);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-      background: radial-gradient(1200px 600px at 10% -10%, #132033 0%, var(--bg) 55%);
+      font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+      background: var(--canvas);
       color: var(--text);
     }
-    a { color: var(--accent2); text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; color: var(--accent-hover); }
     header, main, footer { width: min(980px, calc(100% - 2rem)); margin: 0 auto; }
-    header { padding: 2.5rem 0 1rem; }
+    header {
+      padding: 2.25rem 0 1.25rem;
+      border-bottom: 1px solid var(--border-muted);
+      margin-bottom: .25rem;
+    }
     .badge {
       display: inline-block;
       font-size: 12px;
-      letter-spacing: .04em;
-      text-transform: uppercase;
-      color: var(--accent);
-      border: 1px solid #134e4a;
-      background: #042f2e;
-      padding: .25rem .55rem;
+      font-weight: 600;
+      letter-spacing: .02em;
+      color: var(--success);
+      border: 1px solid #4ac26b66;
+      background: #dafbe1;
+      padding: .2rem .55rem;
       border-radius: 999px;
-      margin-bottom: .8rem;
+      margin-bottom: .85rem;
     }
-    h1 { font-size: clamp(2rem, 4vw, 2.7rem); line-height: 1.15; margin: 0 0 .6rem; }
-    .lead { color: var(--muted); font-size: 1.12rem; max-width: 46rem; }
-    .actions { display: flex; flex-wrap: wrap; gap: .7rem; margin: 1.4rem 0 0; }
+    h1 {
+      font-size: clamp(1.9rem, 3.5vw, 2.4rem);
+      line-height: 1.2;
+      margin: 0 0 .55rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .lead { color: var(--muted); font-size: 1.1rem; max-width: 46rem; margin: 0; }
+    .actions { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1.25rem 0 0; }
     .btn {
-      display: inline-flex; align-items: center; gap: .4rem;
-      border-radius: 10px; padding: .7rem 1rem; font-weight: 600;
+      display: inline-flex; align-items: center; gap: .35rem;
+      border-radius: 6px; padding: .55rem .95rem; font-weight: 600; font-size: .92rem;
       border: 1px solid var(--border);
+      box-shadow: var(--shadow);
     }
-    .btn.primary { background: linear-gradient(180deg, #2dd4bf, #0f766e); color: #042f2e; border-color: #14b8a6; }
-    .btn.ghost { background: var(--panel); color: var(--text); }
+    .btn.primary {
+      background: #1f883d;
+      color: #fff;
+      border-color: rgba(31, 35, 40, 0.15);
+    }
+    .btn.primary:hover { background: #1a7f37; text-decoration: none; color: #fff; }
+    .btn.ghost {
+      background: var(--panel);
+      color: var(--text);
+    }
+    .btn.ghost:hover { background: var(--canvas); text-decoration: none; }
     section {
-      background: color-mix(in srgb, var(--panel) 92%, black);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 1.25rem 1.35rem 1.4rem;
-      margin: 1rem 0;
-    }
-    h2 { margin: 0 0 .8rem; font-size: 1.25rem; }
-    h3 { margin: 1.1rem 0 .5rem; font-size: 1.02rem; color: var(--accent2); }
-    p, li { color: var(--muted); }
-    strong { color: var(--text); }
-    table { width: 100%; border-collapse: collapse; font-size: .95rem; }
-    th, td { border-bottom: 1px solid var(--border); padding: .55rem .4rem; text-align: left; vertical-align: top; }
-    th { color: var(--text); font-weight: 600; }
-    code, pre {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: .88rem;
-    }
-    pre {
-      background: var(--code);
+      background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 12px;
+      padding: 1.2rem 1.3rem 1.35rem;
+      margin: 1rem 0;
+      box-shadow: var(--shadow);
+    }
+    h2 {
+      margin: 0 0 .75rem;
+      font-size: 1.2rem;
+      font-weight: 650;
+      border-bottom: 1px solid var(--border-muted);
+      padding-bottom: .45rem;
+    }
+    h3 { margin: 1rem 0 .45rem; font-size: 1rem; color: var(--text); }
+    p, li { color: var(--muted); }
+    strong { color: var(--text); }
+    ul { margin: .2rem 0 .4rem; padding-left: 1.2rem; }
+    table { width: 100%; border-collapse: collapse; font-size: .94rem; }
+    th, td {
+      border-bottom: 1px solid var(--border-muted);
+      padding: .55rem .4rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: var(--text); font-weight: 600; background: var(--canvas); }
+    tr:last-child td { border-bottom: none; }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      font-size: .86rem;
+    }
+    code {
+      background: var(--code-bg);
+      border: 1px solid var(--border-muted);
+      border-radius: 6px;
+      padding: .1rem .35rem;
+      color: var(--code-text);
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
       padding: 1rem;
       overflow: auto;
-      color: #dbeafe;
+      color: var(--code-text);
+      line-height: 1.45;
     }
+    pre code { border: 0; padding: 0; background: transparent; }
     .grid { display: grid; gap: 1rem; }
     @media (min-width: 820px) { .grid.two { grid-template-columns: 1fr 1fr; } }
     .mermaid {
-      background: #0a1220;
+      background: var(--canvas);
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 8px;
       padding: 1rem;
       overflow-x: auto;
     }
     .warn {
-      border-left: 3px solid var(--warn);
-      padding-left: .8rem;
-      color: #fde68a;
+      border: 1px solid var(--warn-border);
+      background: var(--warn-bg);
+      color: var(--warn-text);
+      border-radius: 8px;
+      padding: .75rem .9rem;
+      margin: .85rem 0 0;
     }
-    footer { color: var(--muted); padding: 1.5rem 0 3rem; font-size: .92rem; }
-    .ok { color: #6ee7b7; }
-    .mid { color: #fcd34d; }
-    .no { color: #fca5a5; }
+    .warn strong { color: var(--warn-text); }
+    footer {
+      color: var(--muted);
+      padding: 1.5rem 0 2.75rem;
+      font-size: .9rem;
+      border-top: 1px solid var(--border-muted);
+      margin-top: .5rem;
+    }
+    .ok { color: var(--success); font-weight: 600; }
+    .mid { color: #9a6700; font-weight: 600; }
+    .no { color: #cf222e; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -253,7 +313,7 @@ flowchart TB
     import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
     mermaid.initialize({
       startOnLoad: true,
-      theme: "dark",
+      theme: "default",
       securityLevel: "strict",
       flowchart: { curve: "basis", htmlLabels: true }
     });
