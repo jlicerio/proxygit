@@ -10,6 +10,7 @@
 ## 1. Gap Analysis (historical — pre-MVP snapshot)
 
 ### What the original design already had:
+
 | Component | Status | File |
 |---|---|---|
 | PRD & System Overview | Complete (spec) | Doc 01 |

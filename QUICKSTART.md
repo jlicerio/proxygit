@@ -116,6 +116,7 @@ The server creates index state for a project on first write.
 
 ### A. One-shot CLI (no mount, no FUSE)
 
+```bash
 $CLIENT write  "$SERVER" "$PROJECT" src/main.rs 'fn main() { println!("hi"); }'
 $CLIENT ls     "$SERVER" "$PROJECT"
 $CLIENT cat    "$SERVER" "$PROJECT" src/main.rs
@@ -150,6 +151,7 @@ Finder: **Go → Connect to Server** → `http://127.0.0.1:3900/webdav/<project-
 
 Stdio (typical for Claude / Cursor / custom runners):
 
+```bash
 ./target/release/proxygit-client mcp "$SERVER" "$PROJECT"
 ```
 
@@ -164,6 +166,7 @@ by default (loopback only).
 
 Requires a FUSE-enabled build and platform support:
 
+```bash
 cargo build --release -p proxygit-client --features fuse
 ./target/release/proxygit-client mount "$SERVER" "$PROJECT"
 # default mount point: /tmp/proxygit/mount
