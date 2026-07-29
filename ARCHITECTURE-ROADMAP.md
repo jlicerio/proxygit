@@ -2,6 +2,11 @@
 
 Consolidated from Codex Sol research, Codex CLI review, and OMP review.
 
+> **Current catch-up plan:** [`docs/design/PATH-TO-PAR.md`](docs/design/PATH-TO-PAR.md)
+> (delta-on-wire → auth → conflicts → benches). Several P0/P1 rows below are
+> already fixed in tree — treat the matrix as historical until refreshed.
+
+
 ## Priority Matrix
 
 | Priority | Issue | Location | Effort | Impact |
