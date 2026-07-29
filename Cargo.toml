@@ -31,7 +31,7 @@ flate2 = "1.0"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0"
+license = "MIT"
 description = "Versioned file proxy for AI-agent and human workflows (QUIC + WebDAV + MCP)"
 repository = "https://github.com/jlicerio/proxygit"
 homepage = "https://github.com/jlicerio/proxygit"

@@ -220,7 +220,7 @@ proxygit/
 ├── ARCHITECTURE-ROADMAP.md  # priorities and known gaps
 ├── QUICKSTART.md            # deploy & mount guide
 ├── AGENTS.md                # conventions for coding agents in this repo
-└── LICENSE                  # Apache-2.0
+└── LICENSE                  # MIT
 ```
 
 ## Develop
@@ -244,4 +244,4 @@ cargo build --release -p proxygit-client --features fuse
 
 ## License
 
-Apache License 2.0 — see [`LICENSE`](LICENSE).
+MIT License — see [`LICENSE`](LICENSE).
