@@ -81,10 +81,10 @@ From the repo root:
 # Trusted private network / lab (publishes on all host interfaces)
 docker compose -f docker/docker-compose.yml up -d --build
 
-# Laptop-only: publish only on loopback
-docker compose -f docker/docker-compose.yml -f docker/docker-compose.localhost.yml up -d --build
+# Laptop-only: publish only on loopback (standalone compose file)
+docker compose -f docker/docker-compose.localhost.yml up -d --build
 
-docker compose -f docker/docker-compose.yml logs -f proxygit-server
+docker compose -f docker/docker-compose.localhost.yml logs -f proxygit-server
 ```
 
 | Port | Proto | Service |
