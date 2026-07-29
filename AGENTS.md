@@ -1,18 +1,52 @@
-# ProxyGit — Agent Conventions
+# ProxyGit — Agentic Workflow
 
 Instructions for coding agents (and humans) working **in this repository**.
 Runtime agents that *consume* a live ProxyGit mount should read the workspace
 `.proxygit` manifest instead — see [`QUICKSTART.md`](QUICKSTART.md).
 
-## Mission
+## Dispatch method
 
-Keep ProxyGit correct, portable, and explainable. Prefer boring Rust, explicit
-errors, and docs that a stranger can follow on a fresh machine with no VPN and
-no personal hostnames.
+**Always use SC OMP, not raw CLI**, for multi-step implementation and review work
+in this repo. Pair a main model with an advisor (`--advisor --slow`).
+
+```bash
+omp -e "$SC_OMP_HOOK" \
+  --advisor --slow "$SC_OMP_ADVISOR" --model "$SC_OMP_MODEL" \
+  "task"
+```
+
+Machine-local values (`SC_OMP_HOOK`, model ids, absolute hook paths) live in
+**untracked** `AGENTS.local.md` (see `AGENTS.local.md.example`). Never commit
+home-directory paths or personal model router ids.
+
+### Worker configuration
+
+| Role | Purpose |
+|------|---------|
+| **Builder** | Implementation + advisor review |
+| **Reviewer** | Independent implementation pass + different advisor |
+
+Concrete model ids for each role are defined in `AGENTS.local.md` (not upstream).
+
+### Pair programming workflow
+
+Use **2 parallel workers** for most tasks — one Builder-configured, one
+Reviewer-configured. They converge results. Dispatch via the orchestrator’s
+delegate/task mechanism.
+
+**Phase implementation pattern:**
+
+1. Orchestrator reads `ARCHITECTURE-ROADMAP.md` for priority
+2. Splits work into 2 parallel dispatches (Builder worker, Reviewer worker)
+3. Workers implement + test independently
+4. Results converge in the orchestrator
+5. Orchestrator runs the verification gate below
+
+Single-worker is acceptable only for trivial doc-only or one-line fixes.
 
 ## Verification gate
 
-Every change must pass before claiming done:
+Every change must pass before reporting done:
 
 ```bash
 cargo check --release -p proxygit-server -p proxygit-client
@@ -23,7 +57,18 @@ cargo fmt --check
 Smoke the path you touched (CLI verb, WebDAV, MCP, or server boot) — green
 units alone are not enough for transport/IO changes.
 
-## Architecture decisions (current)
+## Key files
+
+| File | Purpose |
+|------|---------|
+| `ARCHITECTURE-ROADMAP.md` | Priority matrix, phased implementation plan |
+| `AGENTS.md` | This file — agentic workflow (committed policy) |
+| `AGENTS.local.md` | Machine-local hook paths + model ids (**gitignored**) |
+| `QUICKSTART.md` | User-facing deploy & mount guide |
+| `SPEC.md` | Full system specification |
+| `README.md` | Problem statement + share entrypoint |
+
+## Architecture decisions
 
 | Choice | Detail |
 |--------|--------|
@@ -48,29 +93,31 @@ proxygit/
 ├── scripts/                 # installers, local demo
 ├── docs/design/             # research / future design (not runtime-critical)
 ├── docs/reviews/            # historical review notes
-├── SPEC.md                  # system specification
-├── ARCHITECTURE-ROADMAP.md  # priority matrix
-├── QUICKSTART.md            # user-facing runbook
-└── README.md                # problem statement + share entrypoint
+├── ARCHITECTURE-ROADMAP.md
+├── AGENTS.md
+├── QUICKSTART.md
+├── SPEC.md
+└── README.md
 ```
 
 ## Coding rules
 
-1. **No environment lock-in in docs or defaults committed upstream.**  
-   Forbidden in tree-facing docs: personal home paths, one-off hostnames
-   (`linuxbox`), bare tailnet IPs, single-vendor orchestrator hooks as
-   *requirements*. Examples use `127.0.0.1`, `user@your-server`, or `$SERVER`.
-2. **Security honesty.** WebDAV is unauthenticated HTTP; QUIC has no client
+1. **Follow the dispatch method above** for non-trivial work (SC OMP + dual workers).
+2. **No environment lock-in in user-facing docs or committed defaults.**  
+   Forbidden in README/QUICKSTART/examples: personal home paths, one-off lab
+   hostnames, bare private-network IPs. Use `127.0.0.1`, `user@your-server`,
+   `$SERVER`. Machine-local OMP paths belong only in `AGENTS.local.md`.
+3. **Security honesty.** WebDAV is unauthenticated HTTP; QUIC has no client
    auth. Do not document public-internet deploy as safe. Prefer loopback
    examples; call out trusted-network assumptions.
-3. **Fix durability at the source.** Never drop `sync_data` / `fsync` errors.
+4. **Fix durability at the source.** Never drop `sync_data` / `fsync` errors.
    WAL and block-store paths are load-bearing — see roadmap P0s.
-4. **Keep the CLI and MCP at parity** for file ops (`ls`/`cat`/`stat`/`write`
+5. **Keep the CLI and MCP at parity** for file ops (`ls`/`cat`/`stat`/`write`
    ↔ list/read/stat/write tools).
-5. **Tests stay hermetic.** Bind servers to `127.0.0.1` with ephemeral or
+6. **Tests stay hermetic.** Bind servers to `127.0.0.1` with ephemeral or
    test-only ports; use `tempfile` for data dirs; no reliance on a developer’s
    remote box.
-6. **Scope discipline.** Don’t expand into Garage/S3, full git UX, or auth
+7. **Scope discipline.** Don’t expand into Garage/S3, full git UX, or auth
    frameworks unless the task names them — leave breadcrumbs in the roadmap.
 
 ## Useful entrypoints
@@ -87,13 +134,29 @@ proxygit/
 | WAL | `crates/proxygit-client/src/wal/mod.rs` |
 | CLI surface | `crates/proxygit-client/src/main.rs` |
 
-## Optional local orchestration
+## `.proxygit` manifest (runtime workspaces)
 
-Some maintainers drive parallel workers through external orchestrators. That is
-**optional tooling**, not a repo dependency. The source of truth for merge
-readiness remains the verification gate above. If you use an external runner,
-keep its absolute paths and model names in your personal dotfiles — not in
-committed docs.
+Every ProxyGit-backed directory may contain a `.proxygit` file. Agents working
+*on a mounted project* (not this source repo) should read it on startup:
+
+```toml
+[project]
+name = "example"
+uuid = "00000000-0000-0000-0000-000000000001"
+
+[remote]
+address = "127.0.0.1:8080"
+
+[mcp]
+address = "localhost:8082"
+tools = ["read_file", "write_file", "list_directory", "stat", "get_project_map", "semantic_search"]
+
+[webdav]
+url = "http://127.0.0.1:3900/webdav/00000000-0000-0000-0000-000000000001/"
+```
+
+Agent flow: read `.proxygit` → `tools/list` on MCP → use file tools (prefer over
+shelling out to the mount).
 
 ## Security checklist for agents
 

@@ -26,6 +26,7 @@ Thumbs.db
 # Editor / agent session crumbs (never commit)
 .sc/
 .proxygit.local.toml
+AGENTS.local.md
 
 # Demo / ad-hoc test artifacts accidentally written at repo root
 /test-*.txt

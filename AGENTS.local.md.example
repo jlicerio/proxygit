@@ -1,0 +1,37 @@
+# AGENTS.local.md (example)
+
+Copy to `AGENTS.local.md` (gitignored) and fill in values for this machine.
+This file is **not** part of the public/share contract.
+
+## Environment
+
+```bash
+# Absolute path to the Superconductor / SC OMP hook on this machine
+export SC_OMP_HOOK="${HOME}/.superconductor/hooks/pi-superconductor.ts"
+
+# Default models (replace with whatever your router exposes)
+export SC_OMP_MODEL="opencode-go/deepseek-v4-flash"
+export SC_OMP_ADVISOR="xai/grok-4.5"
+```
+
+## Worker roles (local)
+
+| Role | Main (`SC_OMP_MODEL`) | Advisor (`SC_OMP_ADVISOR`) |
+|------|------------------------|----------------------------|
+| Builder | your-builder-model | your-builder-advisor |
+| Reviewer | your-reviewer-model | your-reviewer-advisor |
+
+## Dispatch examples
+
+```bash
+# Builder
+omp -e "$SC_OMP_HOOK" --advisor --slow "$SC_OMP_ADVISOR" --model "$SC_OMP_MODEL" \
+  "implement …"
+
+# Reviewer (swap model exports first)
+omp -e "$SC_OMP_HOOK" --advisor --slow "$SC_OMP_ADVISOR" --model "$SC_OMP_MODEL" \
+  "review …"
+```
+
+Committed policy (dual workers, verification gate, architecture) remains in
+`AGENTS.md`.
