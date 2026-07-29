@@ -12,8 +12,8 @@
 ## `design/`
 
 Research and future-facing design. **Not required to build or run the MVP.**
-Examples may mention specific lab hosts; treat those as historical context, not
-deploy requirements.
+Hostnames and lab IPs in these notes are generic placeholders (`server-host`,
+`<server-private-ip>`), not deploy requirements.
 
 | File | Topic |
 |------|--------|

@@ -16,7 +16,7 @@
 5. [Storage Schema](#5-storage-schema)
 6. [Sync & Invalidation Pipeline](#6-sync--invalidation-pipeline)
 7. [API Surface](#7-api-surface)
-8. [Deployment: linuxbox](#8-deployment-linuxbox)
+8. [Deployment: server host](#8-deployment-server-host)
 9. [Latency Analysis & Budget](#9-latency-analysis--budget)
 10. [Implementation Plan](#10-implementation-plan)
 11. [Phase 2 Considerations](#11-phase-2-considerations)
@@ -31,7 +31,7 @@
 | 2 | **Chunking** | Hybrid: 1 whole-file embedding + N function-level chunk embeddings per file | Whole-file for "which file is about X"; function-level for "where in the file is the relevant code". Chunking via tree-sitter AST parsing for Rust/Python/JS, line-count fallback for others |
 | 3 | **Sync strategy** | Write-time synchronous update in server | Server owns the data (SQLite + block store) — embedding on write is ~15ms overhead per file, negligible compared to CDC chunking + QUIC send. No background daemon needed |
 | 4 | **API surface** | MCP tool `semantic_search` on server + new QUIC message type `MSG_SEMANTIC_SEARCH` (0x0E) | Follows existing MCP/QUIC patterns. MCP for agents, QUIC for CLI. Response merges results from vector search + FTS5 exact match |
-| 5 | **Deployment** | **linuxbox** (server-side), not macOS | Embeddings live next to the SQLite index and block store. One inference server serves all clients. Avoids duplicating indexes per macOS client. Search traffic flows through existing QUIC channel |
+| 5 | **Deployment** | **server-side** (dedicated host), not macOS | Embeddings live next to the SQLite index and block store. One inference server serves all clients. Avoids duplicating indexes per macOS client. Search traffic flows through existing QUIC channel |
 | 6 | **Latency budget** | **<500ms** per search — ✅ feasible | Per-query breakdown: embedding query (~15ms) + ANN search (~5–50ms for 100K vectors) + FTS5 rerank (~5ms) + QUIC round-trip (~5ms). Total: **<100ms** at P50, **<300ms** at P99 for repos ≤100K files |
 
 ---
@@ -60,7 +60,7 @@
                     │ QUIC msg 0x0E (MSG_SEMANTIC_SEARCH)
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ linuxbox (Server — tailnet: 100.114.245.114)                     │
+│ server-host (Server — private network: <server-private-ip>)                     │
 │                                                                   │
 │  ┌───────────────────────────────────────────────────────────┐   │
 │  │ proxygit-server                                            │   │
@@ -101,7 +101,7 @@
 
 ### Key Design Principle
 
-**Embeddings live on the server** — the same linuxbox that stores blocks and the SQLite index. This avoids:
+**Embeddings live on the server** — the same server host that stores blocks and the SQLite index. This avoids:
 - Duplicating the index per macOS client
 - Syncing embeddings over QUIC (they're already co-located with the data)
 - Running a GPU/ML stack on the user's workstation
@@ -122,7 +122,7 @@ The client (macOS) simply forwards the `semantic_search` MCP call over QUIC to t
 | `codebert` (microsoft) | 768 | N/A | ~430 MB | 50–100ms | ⚠️ (Python/PT) | ✅ Code-specific (NL-PL) |
 | `starencoder` (bigcode) | 4916 | N/A | ~2 GB | 200–500ms | ❌ | ✅ Trained on 6 languages incl. Rust |
 
-**Winner: `bge-small-en-v1.5`.** Despite being a "general" model, BGE-family training includes code data at scale. On Rust-specific benchmarks, bge-small-en-v1.5 performs within 5% of dedicated code models while being 10× smaller and capable of CPU inference. Code-specific models (CodeBERT, StarEncoder) add 10–50× size and require GPU for reasonable latency, which we don't have on linuxbox.
+**Winner: `bge-small-en-v1.5`.** Despite being a "general" model, BGE-family training includes code data at scale. On Rust-specific benchmarks, bge-small-en-v1.5 performs within 5% of dedicated code models while being 10× smaller and capable of CPU inference. Code-specific models (CodeBERT, StarEncoder) add 10–50× size and require GPU for reasonable latency, which we don't have on the server host.
 
 ### 3.2 Rust-Specific Adequacy
 
@@ -771,15 +771,15 @@ Output format:
 
 ---
 
-## 8. Deployment: linuxbox
+## 8. Deployment: server host
 
 ### 8.1 Decision: Server-Side
 
-Semantic search runs on **linuxbox** (the tailnet server), not on the user's macOS.
+Semantic search runs on **server-host** (the private-network server), not on the user's macOS.
 
 **Rationale:**
 
-| Factor | linuxbox (server) | macOS (client) |
+| Factor | server-host (server) | macOS (client) |
 |--------|-------------------|----------------|
 | Data locality | ✅ SQLite + blocks already on same host | ❌ Must fetch content over QUIC to embed |
 | Index deduplication | ✅ Single index serves all clients | ❌ Every macOS client duplicates index |
@@ -790,7 +790,7 @@ Semantic search runs on **linuxbox** (the tailnet server), not on the user's mac
 | MCP pipeline | ✅ Single QUIC message (req + resp) | ❌ N extra QUIC round-trips to fetch file contents |
 | Daemon management | ✅ Already runs as systemd service | ❌ New daemon process needed |
 
-### 8.2 linuxbox System Requirements
+### 8.2 server-host System Requirements
 
 | Resource | Requirement | Notes |
 |----------|-------------|-------|
@@ -1044,4 +1044,4 @@ If BGE-small shows quality gaps on Rust code patterns (macros, generics, lifetim
 
 ---
 
-*This design was produced with Grok 4.5 as reasoning advisor, reviewing the ProxyGit codebase at `/Users/selfsim/proxygit` and prior research in `EMBEDDINGS-RESEARCH.md`.*
+*This design was produced with an external reasoning advisor, reviewing the ProxyGit codebase and prior research in `EMBEDDINGS-RESEARCH.md`.*

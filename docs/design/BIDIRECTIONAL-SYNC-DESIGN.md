@@ -21,21 +21,21 @@
 
 ```
 ┌──────────────────────────────┐
-│  macOS (super.engineering)    │
+│  macOS (workstation)    │
 │  ┌─────────────────────┐     │
 │  │ /Volumes/proxygit-  │     │  User edits files
 │  │ files/ (SMB mount)  │◄────│  via SMB mount
 │  └─────────┬───────────┘     │
 └────────────┼─────────────────┘
-             │ SMB (macOS client → Samba on linuxbox)
+             │ SMB (macOS client → Samba on the server host)
              ▼
 ┌────────────────────────────────────────────────┐
-│  linuxbox (Docker host)                        │
+│  server-host (Docker host)                        │
 │                                                 │
 │  ┌─────────────────────────┐                    │
 │  │ /root/proxygit-files/   │  Flat files dir    │
 │  │ (SMB exported via       │  Shared via Samba  │
-│  │  smb://linuxbox/proxygit-files)              │
+│  │  smb://server-host/proxygit-files)              │
 │  └────────┬────────────────┘                    │
 │           │                                     │
 │  ┌────────▼────────────────┐                    │
@@ -63,7 +63,7 @@
 │  │ Volume: proxygit-data   │                    │
 │  └──────────────────────────┘                    │
 │                                                 │
-│  (Also on linuxbox, outside Docker)             │
+│  (Also on the server host, outside Docker)             │
 │  ┌──────────────────────┐                       │
 │  │ proxygit-client mcp  │  MCP server on :8082 │
 │  │ → writes via QUIC    │  AI agents write here │
@@ -96,12 +96,12 @@
 
 | Approach | Latency | CPU Cost | Complexity | SMB Compat? | Reliable? |
 |----------|---------|----------|------------|-------------|-----------|
-| **A: inotify on linuxbox** | Near-real-time (sub-second) | Very low | Low | ✅ Events fire for Samba writes | ✅ Kernel-guaranteed |
+| **A: inotify on the server host** | Near-real-time (sub-second) | Very low | Low | ✅ Events fire for Samba writes | ✅ Kernel-guaranteed |
 | **B: Periodic checksum scan** | Poll-interval bound (1-30s) | High (all files read + hashed) | Low | ✅ Works with any FS | ⚠ Misses fast create-delete |
 | **C: Periodic mtime/size scan** | Poll-interval bound (1-30s) | Low (stat only) | Low | ✅ Works with any FS | ⚠ False negatives if mtime rounding loses changes |
-| **D: fanotify on linuxbox** | Real-time | Very low | Medium | ✅ | ✅ More features than inotify |
+| **D: fanotify on the server host** | Real-time | Very low | Medium | ✅ | ✅ More features than inotify |
 
-**Recommendation: Hybrid — inotify as primary (on linuxbox) + periodic mtime scan as backup.**
+**Recommendation: Hybrid — inotify as primary (on the server host) + periodic mtime scan as backup.**
 
 **Rationale:**
 - **inotify is ideal** because the SMB server (Samba) writes to a local Linux filesystem. The kernel delivers `IN_CLOSE_WRITE`, `IN_CREATE`, `IN_DELETE`, `IN_MOVED_FROM`/`IN_MOVED_TO` events reliably on the Docker host's `/root/proxygit-files/`.
@@ -192,7 +192,7 @@ curl -X DELETE \
 │  │           ▼                      │   │
 │  │  ┌──────────────────────────┐   │   │
 │  │  │ WebDAV PUT/DELETE →      │   │   │
-│  │  │ linuxbox:3900             │   │   │
+│  │  │ server-host:3900             │   │   │
 │  │  └──────────────────────────┘   │   │
 │  └────────────────────────────────┘   │
 │                                       │
@@ -351,17 +351,17 @@ def sync_file(path):
 
 ### Q6: Integration with parallel-agentic-dispatch workflow
 
-The current workflow uses `super.engineering` (SC OMP) with parallel agents writing through the SMB mount.
+The current workflow uses `workstation` (the local agent orchestrator) with parallel agents writing through the SMB mount.
 
 **How the sync integrates:**
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  super.engineering (superconductor)                       │
+│  workstation (agent orchestrator)                       │
 │                                                           │
 │  OMP Agent Builder ──► SMB mount ──► /root/proxygit-     │
 │  (writes to           (macOS →        files/              │
-│   /Volumes/            linuxbox                           │
+│   /Volumes/            server-host                           │
 │   proxygit-files/)                                        │
 │       │                                                   │
 │       ▼                                                   │
@@ -397,7 +397,7 @@ The current workflow uses `super.engineering` (SC OMP) with parallel agents writ
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  proxygit-sync-daemon (Python, systemd service on linuxbox)      │
+│  proxygit-sync-daemon (Python, systemd service on the server host)      │
 │                                                                   │
 │  ┌─────────────────────┐        ┌─────────────────────────────┐  │
 │  │ Dirsnapshot          │        │ ChangeBuffer                │  │
@@ -448,7 +448,7 @@ Options:
 
 ### Deployment
 
-**Option A: Standalone systemd service on linuxbox (recommended)**
+**Option A: Standalone systemd service on the server host (recommended)**
 
 ```
 # /etc/systemd/system/proxygit-sync-daemon.service

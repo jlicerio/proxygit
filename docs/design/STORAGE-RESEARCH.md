@@ -425,13 +425,13 @@ This is acceptable for development but must be addressed before any real deploym
 
 #### Option A: Tailscale Identity-Based Auth
 
-**Concept**: All ProxyGit nodes are on the same tailnet. The server trusts `whoami` from Tailscale (node identity, not user identity).
+**Concept**: All ProxyGit nodes are on the same private network. The server trusts `whoami` from Tailscale (node identity, not user identity).
 
 - **How it works:**
-  - Tailscale assigns each node a unique identity (node key + tailnet IP)
+  - Tailscale assigns each node a unique identity (node key + private network IP)
   - QUIC: Tailscale already encrypts inter-node traffic with WireGuard. No additional TLS needed — trust the node's Tailscale IP.
-  - WebDAV: Bind to Tailscale interface only (`tailscale0`, `100.x.x.x`). Only tailnet nodes can reach it.
-  - MCP: Same trust model — if you're on the tailnet, you're authorized.
+  - WebDAV: Bind to Tailscale interface only (`tailscale0`, `100.x.x.x`). Only private network nodes can reach it.
+  - MCP: Same trust model — if you're on the private network, you're authorized.
 
 - **Pros:**
   - Zero configuration for auth (Tailscale handles identity)
@@ -440,7 +440,7 @@ This is acceptable for development but must be addressed before any real deploym
   - Works off-network via Tailscale relay/DERP
 
 - **Cons:**
-  - Requires all users to have Tailscale installed and on the same tailnet
+  - Requires all users to have Tailscale installed and on the same private network
   - Not usable outside Tailscale ecosystem
   - Tailscale ACL changes are global (admin console)
   - Proxies the identity question to Tailscale (move trust)
@@ -640,7 +640,7 @@ This is the **simplest possible auth model** — zero implementation, works out 
 
 #### Hybrid: Tailscale + Bearer Tokens for CI
 
-- Human users: Tailscale identity (or mTLS if off-tailnet)
+- Human users: Tailscale identity (or mTLS if off-private network)
 - CI/CD / automation: Bearer tokens per project (stored as GitHub Actions secrets, etc.)
 - Token validation happens at application layer regardless of transport
 
@@ -652,7 +652,7 @@ This is the **simplest possible auth model** — zero implementation, works out 
 
 1. Bind all interfaces to Tailscale IP
 2. Document "run within Tailscale" as the default deployment mode
-3. Optionally, add node-identity check (accept connections only from whitelisted tailnet IPs)
+3. Optionally, add node-identity check (accept connections only from whitelisted private network IPs)
 4. **Result**: Full auth with **zero code changes** — just configuration
 
 #### Phase 2: mTLS Auth (7–10 days)

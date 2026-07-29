@@ -152,7 +152,7 @@ The design adds **3 new Rust crates** for chunking (`tree-sitter`, `tree-sitter-
 
 ### 3.5 Tree-Sitter Grammar Deployment
 
-The design doesn't discuss how tree-sitter grammar files are deployed. On linuxbox (server side), the grammars need to be compiled `.so` files available at runtime. This is straightforward on the build machine but creates a dependency on host tooling (a C compiler + `tree-sitter` CLI). The deployment Dockerfile would need these build-time dependencies.
+The design doesn't discuss how tree-sitter grammar files are deployed. On server-host (server side), the grammars need to be compiled `.so` files available at runtime. This is straightforward on the build machine but creates a dependency on host tooling (a C compiler + `tree-sitter` CLI). The deployment Dockerfile would need these build-time dependencies.
 
 ### 3.6 Mean-Pooling Implementation Error
 
@@ -226,7 +226,7 @@ The design doc estimates **~25.5 hours** (`EMBEDDINGS-DESIGN.md` line 956). The 
 
 | Phase | Estimated | Realistic | Notes |
 |-------|-----------|-----------|-------|
-| P1: Embedding Engine | 6.5h | 8h | Auto-download + ORT init + first-time setup always takes longer than estimated; cross-compilation for linuxbox (x86_64) from macOS (ARM) may add friction |
+| P1: Embedding Engine | 6.5h | 8h | Auto-download + ORT init + first-time setup always takes longer than estimated; cross-compilation for the server host (x86_64) from macOS (ARM) may add friction |
 | P2: Vector Index | 9.5h | **14h** | The estimate includes tree-sitter + chunking + FTS5 + multi-language grammar support. Deferred chunking (drop tree-sitter for MVP) brings this to ~8h. |
 | P3: API Integration | 5h | 4h | Standard QUIC/MCP pattern — well understood, fast to implement if familiar with existing code |
 | P4: Write-Time Sync | 4.5h | 5h | Wiring into `handle_write_blocks` is straightforward; E2E tests always take longer |
@@ -234,7 +234,7 @@ The design doc estimates **~25.5 hours** (`EMBEDDINGS-DESIGN.md` line 956). The 
 
 **Risks that could inflate the estimate:**
 - **ONNX Runtime build time** — `ort` crate compiles/builds ONNX Runtime as a native dependency. First build can take 10-15 minutes. CI setup may need a pre-built artifact cache.
-- **sqlite-vec platform dylib** — The `.so`/`.dylib` needs to be available on linuxbox (x86_64). If the build machine is macOS ARM, cross-compilation or Docker build is needed.
+- **sqlite-vec platform dylib** — The `.so`/`.dylib` needs to be available on the server host (x86_64). If the build machine is macOS ARM, cross-compilation or Docker build is needed.
 - **Tree-sitter grammar build** — Each grammar needs a C compiler at build time. This adds complexity to the Dockerfile.
 - **Model download integration** — HuggingFace downloads via the `ort` crate's built-in download (if any) or via a custom `reqwest` implementation. Token-based auth may be needed for gated models.
 
@@ -282,7 +282,7 @@ The sync daemon integration (`EMBEDDINGS-RESEARCH.md` lines 416–419) adds a re
 
 ### 5.5 Server-Side Architecture ✅ — Sound
 
-The decision to run embeddings on linuxbox (the server, `EMBEDDINGS-DESIGN.md` section 8) rather than on macOS is correct. The reasoning about data locality, index deduplication, and avoiding QUIC round-trips for file content is solid. The thin-client model (macOS forwards MCP calls to server) aligns with the existing architecture.
+The decision to run embeddings on the server host (the server, `EMBEDDINGS-DESIGN.md` section 8) rather than on macOS is correct. The reasoning about data locality, index deduplication, and avoiding QUIC round-trips for file content is solid. The thin-client model (macOS forwards MCP calls to server) aligns with the existing architecture.
 
 ---
 
@@ -317,7 +317,7 @@ Cut scope aggressively to deliver working semantic search:
 
 #### Why this MVP works
 - **Works immediately** for the core use case: "find the Rust file about X"
-- **No dependency on tree-sitter** — avoids grammar build issues on linuxbox
+- **No dependency on tree-sitter** — avoids grammar build issues on the server host
 - **BGE-small ONNX is the simplest path** — `ort` crate + model file, proven in production
 - **384-d vectors** fit sqlite-vec well without dimension abstraction complexity
 - **Write-time sync** means search results are never stale
