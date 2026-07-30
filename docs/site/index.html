@@ -196,9 +196,9 @@ proxygit-client mcp   $SERVER $PROJECT   # agent tools on stdio</pre>
       <ul>
         <li><strong>Sparse writes are 64&nbsp;KiB block-aligned.</strong> Unchanged blocks are hash-only on the wire after <code>HAS_BLOCKS</code>; not byte-granular VCDIFF. A 1‑byte edit can still send one full 64&nbsp;KiB block.</li>
         <li><strong>Measured:</strong> 1&nbsp;MiB file → ~1.05&nbsp;MB first sparse write; 1&nbsp;KiB mid-file edit → <strong>66&nbsp;KB</strong> payload (~16×) via <code>scripts/bench-edit.sh</code>.</li>
-        <li><strong>Semantic search is a stub</strong> — BLAKE3 mock embeddings, not a real model.</li>
+        <li><strong><code>content_search</code> is a hash-embedding stub</strong> — BLAKE3 mock vectors, not a language model (legacy alias: <code>semantic_search</code>).</li>
         <li><strong>Not git versioning</strong> — content-addressed storage + tarball backups, not branches/merges.</li>
-        <li><strong>No app auth / no conflict merge</strong> — trusted network only; last-writer-wins.</li>
+        <li><strong>Optional bearer auth</strong> (<code>PROXYGIT_TOKEN</code>) and optional <code>reject_stale</code> conflicts; default remains open + last-writer-wins.</li>
       </ul>
     </section>
 

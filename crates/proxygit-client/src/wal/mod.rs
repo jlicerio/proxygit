@@ -441,7 +441,7 @@ pub fn start_wal_flush_worker(
                     // Instead of CDC (which shifts all chunk boundaries for a 1KB edit),
                     // use 64KB fixed blocks and only send changed blocks' data.
                     let sparse_chunks = build_sparse_diff(&base, &content, 65536);
-                    let payload = encode_sparse_write(&path, &sparse_chunks);
+                    let payload = encode_sparse_write(&path, &sparse_chunks, None);
                     let hash = blake3::hash(&payload).into();
 
                     let res = match pool.borrow().await {

@@ -21,11 +21,52 @@ use proxygit_common::cdc::ChunkResult;
 use proxygit_common::protocol::*;
 use proxygit_common::types::ProjectId;
 
+/// How the server treats concurrent writes with an expected tree hash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteConflictPolicy {
+    /// Ignore expected hash (default, lab mode).
+    LastWriterWins,
+    /// Reject when expected hash is present and does not match server.
+    RejectStale,
+}
+
+impl WriteConflictPolicy {
+    pub fn from_env() -> Self {
+        match std::env::var("PROXYGIT_WRITE_CONFLICT")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "reject_stale" | "reject" | "strict" => Self::RejectStale,
+            _ => Self::LastWriterWins,
+        }
+    }
+}
+
 pub struct AppState {
     pub data_dir: PathBuf,
     pub indexer: indexer::ProjectIndexer,
     pub block_store: block_store::BlockStore,
     pub embeddings: Arc<Mutex<embeddings::EmbeddingIndex>>,
+    /// When `Some`, QUIC streams and WebDAV require this bearer token.
+    pub auth_token: Option<String>,
+    pub write_conflict: WriteConflictPolicy,
+}
+
+impl AppState {
+    pub fn auth_required(&self) -> bool {
+        self.auth_token.is_some()
+    }
+
+    pub fn check_token(&self, presented: Option<&str>) -> bool {
+        match &self.auth_token {
+            None => true,
+            Some(expected) => match presented {
+                Some(p) => proxygit_common::auth::tokens_equal(expected, p),
+                None => false,
+            },
+        }
+    }
 }
 
 pub fn percent_decode(input: &str) -> Result<String> {
@@ -81,11 +122,25 @@ pub async fn run_server(listen_addr: SocketAddr, data_dir: PathBuf) -> Result<()
     let mut embeddings_idx = embeddings::EmbeddingIndex::new(&data_dir);
     embeddings_idx.load()?;
 
+    let auth_token = proxygit_common::auth::load_token_from_env()?;
+    let write_conflict = WriteConflictPolicy::from_env();
+    if let Some(ref t) = auth_token {
+        info!(
+            "Auth ENABLED (token len={}); clients must send MSG_AUTH / Bearer",
+            t.len()
+        );
+    } else {
+        info!("Auth DISABLED (set PROXYGIT_TOKEN or PROXYGIT_TOKEN_FILE to enable)");
+    }
+    info!("Write conflict policy: {:?}", write_conflict);
+
     let state = Arc::new(AppState {
         data_dir: data_dir.clone(),
         indexer: indexer::ProjectIndexer::new(&index_dir)?,
         block_store: block_store::BlockStore::new(&blocks_dir)?,
         embeddings: Arc::new(Mutex::new(embeddings_idx)),
+        auth_token,
+        write_conflict,
     });
 
     let webdav_addr: SocketAddr = std::env::var("PROXYGIT_WEBDAV_LISTEN")
@@ -179,6 +234,53 @@ pub async fn handle_connection(incoming: quinn::Incoming, state: Arc<AppState>) 
     let conn = incoming.await?;
     let remote = conn.remote_address();
     info!("New connection from {remote}");
+
+    // When auth is enabled, the first bi-stream must be MSG_AUTH.
+    let mut authed = !state.auth_required();
+    if state.auth_required() {
+        match conn.accept_bi().await {
+            Ok((mut send, mut recv)) => match recv_frame(&mut recv).await {
+                Ok(frame) if frame.msg_type == MSG_AUTH => {
+                    let presented = String::from_utf8_lossy(&frame.payload);
+                    let presented = presented.trim();
+                    if state.check_token(Some(presented)) {
+                        let payload = b"ok";
+                        let hash = blake3::hash(payload).into();
+                        let _ = send_frame(&mut send, MSG_AUTH_OK, 0, &hash, payload).await;
+                        authed = true;
+                        info!("Auth OK from {remote}");
+                    } else {
+                        let payload = b"unauthorized";
+                        let hash = blake3::hash(payload).into();
+                        let _ = send_frame(&mut send, MSG_AUTH_FAIL, 0, &hash, payload).await;
+                        warn!("Auth FAIL from {remote}");
+                        return Ok(());
+                    }
+                }
+                Ok(frame) => {
+                    let msg = format!(
+                        "auth required: first stream must be MSG_AUTH, got 0x{:02x}",
+                        frame.msg_type
+                    );
+                    let _ = send_frame(&mut send, MSG_ERROR, 0, &[0u8; 32], msg.as_bytes()).await;
+                    warn!("Auth missing from {remote}");
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!("Auth handshake error from {remote}: {e:#}");
+                    return Ok(());
+                }
+            },
+            Err(e) => {
+                warn!("Connection from {remote} closed before auth: {e}");
+                return Ok(());
+            }
+        }
+    }
+
+    if !authed {
+        return Ok(());
+    }
 
     loop {
         match conn.accept_bi().await {
@@ -488,7 +590,7 @@ pub async fn handle_write_blocks_sparse(
     send: &mut quinn::SendStream,
     state: &AppState,
 ) -> Result<()> {
-    let (raw_path, sparse_chunks) = match decode_sparse_write(&frame.payload) {
+    let (raw_path, expected_hash, sparse_chunks) = match decode_sparse_write(&frame.payload) {
         Ok(v) => v,
         Err(e) => {
             return send_frame(
@@ -517,6 +619,55 @@ pub async fn handle_write_blocks_sparse(
     };
 
     let project_id = ProjectId::from_u128(frame.project_id);
+
+    // Optimistic concurrency: when policy is RejectStale and client sent expected hash.
+    if state.write_conflict == WriteConflictPolicy::RejectStale {
+        if let Some(expected) = expected_hash {
+            let expected_hex = hex::encode(expected);
+            match state.indexer.stat_file(&project_id, &path)? {
+                Some(entry) => {
+                    if entry.tree_hash != expected_hex {
+                        let err = serde_json::json!({
+                            "error": "conflict",
+                            "path": path,
+                            "base_hash": expected_hex,
+                            "server_hash": entry.tree_hash,
+                        });
+                        let payload = serde_json::to_vec(&err)?;
+                        return send_frame(
+                            send,
+                            MSG_ERROR,
+                            frame.project_id,
+                            &blake3::hash(&payload).into(),
+                            &payload,
+                        )
+                        .await;
+                    }
+                }
+                None => {
+                    // New file: expected hash must be all-zero to mean "must not exist".
+                    if expected != [0u8; 32] {
+                        let err = serde_json::json!({
+                            "error": "conflict",
+                            "path": path,
+                            "base_hash": expected_hex,
+                            "server_hash": null,
+                            "message": "file does not exist on server",
+                        });
+                        let payload = serde_json::to_vec(&err)?;
+                        return send_frame(
+                            send,
+                            MSG_ERROR,
+                            frame.project_id,
+                            &blake3::hash(&payload).into(),
+                            &payload,
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+    }
 
     // 1. Store new blocks (chunks with non-empty data)
     for chunk in &sparse_chunks {

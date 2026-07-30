@@ -9,6 +9,11 @@ use uuid::Uuid;
 
 #[tokio::test]
 async fn smoke_test_m1_to_m6_end_to_end() -> Result<()> {
+    // Ensure lab defaults: no auth / last-writer-wins (other tests may set these).
+    std::env::remove_var("PROXYGIT_TOKEN");
+    std::env::remove_var("PROXYGIT_TOKEN_FILE");
+    std::env::remove_var("PROXYGIT_WRITE_CONFLICT");
+
     // 1. Setup temp data dir for server and client
     let temp_dir = tempfile::tempdir()?;
     let data_dir = temp_dir.path().to_path_buf();

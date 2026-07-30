@@ -25,6 +25,7 @@ async fn main() -> Result<()> {
     if args.len() < 2 {
         eprintln!("Usage: proxygit-client <command> [args]");
         eprintln!("  version                           — Print version and exit");
+        eprintln!("  gen-token                         — Generate a random PROXYGIT_TOKEN value");
         eprintln!("  mount <server_addr> <project_id>  — Mount a project (FUSE / local)");
         eprintln!(
             "  mcp <server_addr> <project_id>    — Run MCP JSON-RPC 2.0 stdio server for AI agents"
@@ -35,8 +36,9 @@ async fn main() -> Result<()> {
         eprintln!(
             "  write <server_addr> <project_id> <path> [text] — Write file (or read from stdin)"
         );
+        eprintln!("      optional env PROXYGIT_EXPECTED_TREE_HASH=hex for reject_stale writes");
         eprintln!(
-            "  search <server_addr> <project_id> <query> [limit] — Semantic search for files"
+            "  search <server_addr> <project_id> <query> [limit] — Content-hash search (stub, not ML)"
         );
         eprintln!("  backup create <server_addr> <uuid>    — Trigger server backup via WebDAV");
         eprintln!("  backup list <server_addr> <uuid>      — List backups via WebDAV");
@@ -48,6 +50,9 @@ async fn main() -> Result<()> {
 
     match args[1].as_str() {
         "version" => cmd_version().await?,
+        "gen-token" => {
+            println!("{}", proxygit_common::auth::generate_token());
+        }
         "mount" => cmd_mount(&config, &args).await?,
         "mcp" => cmd_mcp(&config, &args).await?,
         "ls" => cmd_ls(&args).await?,
@@ -341,20 +346,38 @@ async fn cmd_write(args: &[String]) -> Result<()> {
         buf
     };
 
+    let expected = std::env::var("PROXYGIT_EXPECTED_TREE_HASH")
+        .ok()
+        .and_then(|s| {
+            let s = s.trim();
+            if s.len() != 64 {
+                return None;
+            }
+            let mut out = [0u8; 32];
+            for i in 0..32 {
+                out[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+            }
+            Some(out)
+        });
+
     let conn = connect_to_server(server_addr).await?;
     let pool = StreamPool::new(conn, 4);
-    let res = mcp_write_file(&pool, project_id, path, &content_bytes).await;
+    let res = mcp_write_file_opts(&pool, project_id, path, &content_bytes, expected).await;
+    if res.get("error").and_then(|e| e.as_str()) == Some("conflict") {
+        eprintln!("{}", serde_json::to_string_pretty(&res)?);
+        anyhow::bail!("conflict: stale expected_tree_hash");
+    }
     if let Some(err) = res.get("error") {
-        anyhow::bail!("Error: {}", err.as_str().unwrap_or("unknown"));
+        anyhow::bail!("Error: {}", err.as_str().unwrap_or(&err.to_string()));
     }
     println!("OK tree_hash: {}", res["tree_hash"].as_str().unwrap_or(""));
     Ok(())
 }
 
-/// `search <server_addr> <project_id> <query> [limit]` — Semantic file search
+/// `search <server_addr> <project_id> <query> [limit]` — Content-hash search stub
 async fn cmd_search(args: &[String]) -> Result<()> {
     if args.len() < 5 {
-        anyhow::bail!("Usage: proxygit-client search <server_addr> <project_id> <query> [limit]");
+        anyhow::bail!("Usage: proxygit-client search <server_addr> <project_id> <query> [limit]  (hash-embedding stub)");
     }
     let server_addr: SocketAddr = args[2].parse().context("Invalid server address")?;
     let project_id: uuid::Uuid = args[3].parse().context("Invalid project ID")?;
@@ -363,7 +386,7 @@ async fn cmd_search(args: &[String]) -> Result<()> {
 
     let conn = connect_to_server(server_addr).await?;
     let pool = StreamPool::new(conn, 4);
-    let paths = mcp_semantic_search(&pool, project_id, query, limit).await?;
+    let paths = mcp_content_search(&pool, project_id, query, limit).await?;
     for path in &paths {
         println!("{path}");
     }
@@ -413,6 +436,13 @@ async fn cmd_backup(args: &[String]) -> Result<()> {
     }
 }
 
+fn curl_auth_args() -> Vec<String> {
+    match proxygit_common::auth::load_token_from_env().ok().flatten() {
+        Some(t) => vec!["-H".into(), format!("Authorization: Bearer {t}")],
+        None => Vec::new(),
+    }
+}
+
 /// Trigger a server-side backup via WebDAV: GET /webdav/<uuid>/__backup/create
 async fn cmd_backup_create(host: &str, uuid: &str) -> Result<()> {
     let url = format!("http://{host}:3900/webdav/{uuid}/__backup/create");
@@ -421,6 +451,7 @@ async fn cmd_backup_create(host: &str, uuid: &str) -> Result<()> {
         .arg("-X")
         .arg("GET")
         .arg(&url)
+        .args(curl_auth_args())
         .output()
         .context("Failed to execute curl for backup create")?;
 
@@ -444,6 +475,7 @@ async fn cmd_backup_list(host: &str, uuid: &str) -> Result<()> {
     let output = std::process::Command::new("curl")
         .arg("-s")
         .arg(&url)
+        .args(curl_auth_args())
         .output()
         .context("Failed to execute curl for backup list")?;
 
@@ -468,6 +500,7 @@ async fn cmd_backup_restore(host: &str, uuid: &str, name: &str) -> Result<()> {
         .arg("--data")
         .arg(format!("name={name}"))
         .arg(&url)
+        .args(curl_auth_args())
         .output()
         .context("Failed to execute curl for backup restore")?;
 

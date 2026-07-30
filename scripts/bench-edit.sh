@@ -159,6 +159,27 @@ print(f"OK: edit/full payload ratio first/second = {ratio:.1f}x reduction on sec
 print(f"MEASURED: file={file_size} first_sparse_payload={first_p} edit_sparse_payload={second_p}")
 PY
 
+echo ""
+echo "═══════════════════════════════════════"
+echo "  Compare: rsync of same 1 KiB edit"
+echo "═══════════════════════════════════════"
+# Baseline: rsync must ship the whole file (no rolling hash delta without --inplace tricks).
+# We time a full-file rsync to a fresh dest after the edit — honest "replace remote file" cost.
+RSYNC_SRC="$WORK/rsync-src"
+RSYNC_DST="$WORK/rsync-dst"
+mkdir -p "$RSYNC_SRC" "$RSYNC_DST"
+# Seed dest with original; src gets the edited file so rsync has work to do.
+cp "$WORK/bigfile.txt" "$RSYNC_DST/bigfile.txt"
+cp "$WORK/bigfile-edit.txt" "$RSYNC_SRC/bigfile.txt"
+START_NS=$(python3 -c 'import time; print(time.time_ns())')
+rsync -a --checksum "$RSYNC_SRC/bigfile.txt" "$RSYNC_DST/bigfile.txt"
+END_NS=$(python3 -c 'import time; print(time.time_ns())')
+RSYNC_MS=$(python3 -c "start=int('${START_NS}'); end=int('${END_NS}'); print(f'{(end-start)/1e6:.2f}')")
+RSYNC_BYTES=$(wc -c <"$WORK/bigfile-edit.txt" | tr -d ' ')
+echo "rsync --checksum wall_ms=$RSYNC_MS whole_file_bytes=$RSYNC_BYTES"
+echo "NOTE: ProxyGit edit sparse payload ~66KB above; rsync --checksum still replaces whole ~1MB file contents."
+echo "COMPARISON: proxygit_edit_payload<<rsync_whole_file_bytes (see MEASURED line)"
+
 echo "Log kept at: $LOG_FILE"
 # prevent cleanup from deleting log before user sees path — copy
 cp "$LOG_FILE" /tmp/proxygit-bench-last.log

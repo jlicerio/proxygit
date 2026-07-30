@@ -13,6 +13,18 @@ use tracing::{info, warn};
 use proxygit_common::protocol::*;
 use proxygit_common::types::FileEntry;
 
+fn parse_hex_tree_hash(s: &str) -> Option<[u8; 32]> {
+    let s = s.trim();
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
 /// A bounded pool of pre-opened bidirectional QUIC streams.
 /// Avoids the overhead of calling `conn.open_bi()` for every MCP tool invocation.
 pub struct StreamPool {
@@ -123,6 +135,29 @@ pub async fn connect_to_server_with_cert(
 
     let conn = endpoint.connect(server_addr, "proxygit-server")?.await?;
 
+    // Optional bearer auth (must be first bi-stream when server has PROXYGIT_TOKEN set).
+    if let Some(token) = proxygit_common::auth::load_token_from_env()? {
+        let (mut send, mut recv) = conn.open_bi().await?;
+        let payload = token.as_bytes();
+        let hash = blake3::hash(payload).into();
+        send_frame(&mut send, MSG_AUTH, 0, &hash, payload).await?;
+        let resp = tokio::time::timeout(Duration::from_secs(5), recv_frame(&mut recv))
+            .await
+            .map_err(|_| anyhow::anyhow!("auth handshake timed out"))??;
+        match resp.msg_type {
+            MSG_AUTH_OK => {
+                info!("Authenticated to server");
+            }
+            MSG_AUTH_FAIL => {
+                anyhow::bail!("Server rejected auth token (MSG_AUTH_FAIL)");
+            }
+            MSG_ERROR => {
+                anyhow::bail!("Auth error: {}", String::from_utf8_lossy(&resp.payload));
+            }
+            other => anyhow::bail!("Unexpected auth response type: 0x{other:02x}"),
+        }
+    }
+
     Ok(conn)
 }
 
@@ -232,9 +267,19 @@ pub async fn mcp_write_file(
     path: &str,
     content: &[u8],
 ) -> serde_json::Value {
+    mcp_write_file_opts(pool, project_id, path, content, None).await
+}
+
+/// Write with optional optimistic-concurrency base hash (32-byte BLAKE3 of prior content).
+pub async fn mcp_write_file_opts(
+    pool: &StreamPool,
+    project_id: uuid::Uuid,
+    path: &str,
+    content: &[u8],
+    expected_tree_hash: Option<[u8; 32]>,
+) -> serde_json::Value {
     const BLOCK_SIZE: usize = 65536; // 64KB fixed-size blocks
 
-    // 1. Split content into 64KB fixed-size blocks, compute BLAKE3 hashes
     let mut sparse_chunks: Vec<SparseChunk> = Vec::new();
     let mut all_hashes: Vec<[u8; 32]> = Vec::new();
     for data in content.chunks(BLOCK_SIZE) {
@@ -246,9 +291,6 @@ pub async fn mcp_write_file(
         });
     }
 
-    // 2. Hash handshake: query server for already-known blocks.
-    //    Uses its own stream (streams are one-shot). Falls back to
-    //    sending all data if the handshake fails.
     let known_hashes: Vec<[u8; 32]> = match pool.borrow().await {
         Ok((mut send, mut recv)) => {
             let query_payload = encode_hash_list(&all_hashes);
@@ -299,15 +341,13 @@ pub async fn mcp_write_file(
         }
     };
 
-    // 3. Mark known blocks with empty data (hash-only reference)
     for chunk in &mut sparse_chunks {
         if known_hashes.contains(&chunk.hash) {
             chunk.data.clear();
         }
     }
 
-    // 4. Encode sparse write payload
-    let payload = encode_sparse_write(path, &sparse_chunks);
+    let payload = encode_sparse_write(path, &sparse_chunks, expected_tree_hash.as_ref());
     let hash = blake3::hash(&payload).into();
 
     match pool.borrow().await {
@@ -326,10 +366,24 @@ pub async fn mcp_write_file(
             match recv_frame(&mut recv).await {
                 Ok(resp) if resp.msg_type == MSG_WRITE_ACK => {
                     pool.return_stream(send, recv).await;
-                    serde_json::json!({ "status": "ok", "tree_hash": String::from_utf8_lossy(&resp.payload).to_string() })
+                    if let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(&resp.payload) {
+                        if v.get("status").is_none() {
+                            if let Some(obj) = v.as_object_mut() {
+                                obj.insert("status".into(), serde_json::json!("ok"));
+                            }
+                        }
+                        return v;
+                    }
+                    serde_json::json!({
+                        "status": "ok",
+                        "tree_hash": String::from_utf8_lossy(&resp.payload).to_string()
+                    })
                 }
                 Ok(resp) if resp.msg_type == MSG_ERROR => {
                     pool.return_stream(send, recv).await;
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&resp.payload) {
+                        return v;
+                    }
                     serde_json::json!({ "error": String::from_utf8_lossy(&resp.payload).to_string() })
                 }
                 Ok(_) => {
@@ -430,8 +484,8 @@ pub async fn mcp_stat(pool: &StreamPool, project_id: uuid::Uuid, path: &str) -> 
     }
 }
 
-/// Semantic search over project files.
-/// Sends a query string + limit to the server, receives matching file paths.
+/// Content-hash search over project files (BLAKE3 mock embeddings — not a language model).
+/// Prefer [`mcp_content_search`]. Kept as alias for older callers.
 pub async fn mcp_semantic_search(
     pool: &StreamPool,
     project_id: uuid::Uuid,
@@ -466,6 +520,16 @@ pub async fn mcp_semantic_search(
         pool.return_stream(send, recv).await;
         anyhow::bail!("Unexpected response type: 0x{:02x}", resp.msg_type);
     }
+}
+
+/// Honest name for the hash-embedding search stub.
+pub async fn mcp_content_search(
+    pool: &StreamPool,
+    project_id: uuid::Uuid,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<String>> {
+    mcp_semantic_search(pool, project_id, query, limit).await
 }
 
 /// Run standard Anthropic MCP stdio JSON-RPC 2.0 protocol loop over any reader/writer pair
@@ -555,13 +619,14 @@ pub async fn handle_mcp_jsonrpc_request(
                     },
                     {
                         "name": "write_file",
-                        "description": "Write content to a file. Provide either `content` (UTF-8 string) or `base64_content` (base64-encoded binary).",
+                        "description": "Write content to a file. Provide either `content` (UTF-8 string) or `base64_content` (base64-encoded binary). Optional `expected_tree_hash` (64 hex) for optimistic concurrency when server has PROXYGIT_WRITE_CONFLICT=reject_stale.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
                                 "path": { "type": "string" },
                                 "content": { "type": "string" },
-                                "base64_content": { "type": "string" }
+                                "base64_content": { "type": "string" },
+                                "expected_tree_hash": { "type": "string" }
                             },
                             "required": ["path"]
                         }
@@ -598,8 +663,20 @@ pub async fn handle_mcp_jsonrpc_request(
                         }
                     },
                     {
+                        "name": "content_search",
+                        "description": "Search project files by content-hash embedding similarity (MVP stub: deterministic BLAKE3 mock vectors, not a language model).",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "query": { "type": "string", "description": "The search query" },
+                                "limit": { "type": "integer", "description": "Maximum results to return", "default": 10 }
+                            },
+                            "required": ["query"]
+                        }
+                    },
+                    {
                         "name": "semantic_search",
-                        "description": "Search project files by semantic similarity to a query string. Returns matching file paths with relevance scores.",
+                        "description": "Search project files by content-hash embedding similarity (MVP stub: deterministic BLAKE3 mock vectors, not a language model). Deprecated alias for content_search.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -636,16 +713,22 @@ pub async fn handle_mcp_jsonrpc_request(
                             .as_bytes()
                             .to_vec()
                     };
-                    mcp_write_file(pool, project_id, path, &content).await
+                    let expected = tool_params["expected_tree_hash"]
+                        .as_str()
+                        .and_then(parse_hex_tree_hash);
+                    mcp_write_file_opts(pool, project_id, path, &content, expected).await
                 }
                 "list_directory" => mcp_list_directory(pool, project_id, path).await,
                 "stat" => mcp_stat(pool, project_id, path).await,
                 "get_project_map" => generate_project_map(pool, project_id).await,
-                "semantic_search" => {
+                "content_search" | "semantic_search" => {
                     let query = tool_params["query"].as_str().unwrap_or("");
                     let limit = tool_params["limit"].as_u64().unwrap_or(10) as usize;
-                    match mcp_semantic_search(pool, project_id, query, limit).await {
-                        Ok(paths) => serde_json::json!({ "paths": paths }),
+                    match mcp_content_search(pool, project_id, query, limit).await {
+                        Ok(paths) => serde_json::json!({
+                            "paths": paths,
+                            "note": "hash-embedding stub, not ML semantic search"
+                        }),
                         Err(e) => serde_json::json!({ "error": format!("{e}") }),
                     }
                 }

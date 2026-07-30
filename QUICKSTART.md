@@ -187,7 +187,7 @@ sudo mount -t davfs "http://${SERVER_HOST}:3900/webdav/$PROJECT" /mnt/my-project
 ```
 
 JSON-RPC 2.0 MCP on stdin/stdout. Tools: `read_file`, `write_file`,
-`list_directory`, `stat`, `get_project_map`, `semantic_search`.
+`list_directory`, `stat`, `get_project_map`, `content_search` (alias `semantic_search`).
 
 ### D. FUSE mount (optional, macOS/Linux)
 
@@ -257,7 +257,7 @@ address = "127.0.0.1:8080"
 
 [mcp]
 address = "localhost:8082"
-tools = ["read_file", "write_file", "list_directory", "stat", "get_project_map", "semantic_search"]
+tools = ["read_file", "write_file", "list_directory", "stat", "get_project_map", "content_search"]
 
 [webdav]
 url = "http://127.0.0.1:3900/webdav/00000000-0000-0000-0000-000000000001/"
@@ -281,6 +281,10 @@ paths    = ["target", "node_modules"]
 | `PROXYGIT_LISTEN` | `0.0.0.0:8080` | QUIC bind **inside** process/container |
 | `PROXYGIT_WEBDAV_LISTEN` | `0.0.0.0:3900` | WebDAV bind; **no auth** |
 | `PROXYGIT_SERVER_CERT` | search path | Client pin to server’s `server_cert.der` |
+| `PROXYGIT_TOKEN` | unset | Optional shared secret (server + client). Auth **off** when unset |
+| `PROXYGIT_TOKEN_FILE` | unset | Token file alternative to `PROXYGIT_TOKEN` |
+| `PROXYGIT_WRITE_CONFLICT` | `last_writer_wins` | `reject_stale` enables expected-hash checks |
+| `PROXYGIT_EXPECTED_TREE_HASH` | unset | Client CLI: 64-hex base hash for conditional write |
 
 ## 8. Feature checklist
 

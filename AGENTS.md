@@ -149,7 +149,7 @@ address = "127.0.0.1:8080"
 
 [mcp]
 address = "localhost:8082"
-tools = ["read_file", "write_file", "list_directory", "stat", "get_project_map", "semantic_search"]
+tools = ["read_file", "write_file", "list_directory", "stat", "get_project_map", "content_search"]
 
 [webdav]
 url = "http://127.0.0.1:3900/webdav/00000000-0000-0000-0000-000000000001/"
@@ -190,7 +190,7 @@ Before exposing a server beyond localhost:
 
 - [ ] `PROXYGIT_LISTEN` / `PROXYGIT_WEBDAV_LISTEN` bound appropriately
 - [ ] Ports not published to `0.0.0.0` on a public interface
-- [ ] Operator understands there is **no app-level auth** yet
+- [ ] Operator sets `PROXYGIT_TOKEN` (or accepts trusted-network open mode)
 - [ ] Sample manifests use placeholders, not real network identities
 
 ---

@@ -32,9 +32,10 @@ writes (see limits).
 ### Honest limits (MVP)
 
 - **Sparse writes are 64 KiB block-aligned.** CLI write + WAL flush send only changed fixed-size blocks (plus a `HAS_BLOCKS` handshake on the CLI path). Not byte-granular VCDIFF; a 1‑byte edit still ships up to one 64 KiB block.
-- **“Semantic search” is a stub.** Embeddings are deterministic BLAKE3 mock vectors, not a real language model.
-- **“Versioned” ≠ git history.** You get content-addressed blocks + explicit tarball backups, not per-change branches/merges.
-- **No app auth / no conflict merge.** Trusted network only; concurrent writers are last-writer-wins.
+- **`content_search` is a hash-embedding stub.** Deterministic BLAKE3 mock vectors, not a language model. Legacy MCP name `semantic_search` is an alias.
+- **“Versioned” ≠ git history.** Content-addressed blocks + tarball backups, not branches/merges.
+- **Auth is optional.** Unset `PROXYGIT_TOKEN` = open trusted-network mode. Set token (or `PROXYGIT_TOKEN_FILE`) to require QUIC `MSG_AUTH` + WebDAV `Authorization: Bearer`.
+- **Conflicts are opt-in.** Default last-writer-wins; `PROXYGIT_WRITE_CONFLICT=reject_stale` rejects stale `expected_tree_hash`.
 
 ### Sparse write microbench (loopback, release)
 
@@ -66,9 +67,11 @@ Re-run the script after protocol changes before citing new numbers.
 | FUSE mount | Optional (`--features fuse`, macOS/Linux) |
 | Content-addressed block storage (FastCDC + BLAKE3) | ✅ |
 | Sparse wire write (64 KiB block diff + `HAS_BLOCKS`) | ✅ |
-| Real semantic embeddings (BGE/ONNX) | ❌ mock hash embeddings only |
-| Conflict resolution / CRDT / OT | ❌ last-writer-wins |
-| Client auth (mTLS / tokens) | ❌ trusted-network only |
+| Content-hash search (`content_search`) | ✅ BLAKE3 mock embeddings (not ML) |
+| Real semantic embeddings (BGE/ONNX) | ❌ roadmap |
+| Optimistic concurrency (`expected_tree_hash`) | ✅ optional `PROXYGIT_WRITE_CONFLICT=reject_stale` |
+| CRDT / automatic merge | ❌ |
+| Client auth (optional bearer token) | ✅ off by default (`PROXYGIT_TOKEN`) |
 | Garage S3 backend, A2A bus | Roadmap — see [`ARCHITECTURE-ROADMAP.md`](ARCHITECTURE-ROADMAP.md) |
 
 ### Platform matrix
@@ -190,7 +193,7 @@ When the client runs in MCP mode, agents get:
 | `list_directory` | Directory listing |
 | `stat` | Size / mtime / hash metadata |
 | `get_project_map` | Full tree in one round-trip |
-| `semantic_search` | **MVP stub** — hash-embedding nearest neighbors, not true semantics |
+| `content_search` | **MVP stub** — BLAKE3 hash-embedding neighbors (alias: `semantic_search`) |
 
 A checked-out ProxyGit workspace may also contain a `.proxygit` TOML manifest so
 agents can discover `server`, `uuid`, and MCP endpoint without hard-coding hosts.

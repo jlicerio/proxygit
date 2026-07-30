@@ -37,10 +37,10 @@ with the current `MSG_WRITE_BLOCKS` shape, or do we need a new message type?
 
 | Gap | Why it matters | Target |
 |-----|----------------|--------|
-| No auth | Cannot leave lab overlay | Shared secret or mTLS |
-| No conflicts | Two agents clobber | Detect + surface; then simple policy |
-| Mock “semantic” search | Misleading tool name | Real model **or** rename to hash search |
-| No competitive numbers vs rsync/Mutagen | Claims are vibes | Bench table in README |
+| mTLS / multi-tenant RBAC | Token is shared secret only | Later |
+| Automatic merge / CRDT | Only detect+reject | Later |
+| Real ML embeddings | `content_search` is hash stub | ONNX optional |
+| Mutagen/JuiceFS full parity suite | Microbench vs rsync only | Expand E |
 | MCP `2024-11-05` | Agent compat drift | Bump when runners need it |
 | Byte-granular / VCDIFF deltas | 64 KiB block floor | Optional later (A3+) |
 
@@ -61,7 +61,7 @@ with the current `MSG_WRITE_BLOCKS` shape, or do we need a new message type?
 storage chunker on the legacy `MSG_WRITE_BLOCKS` path. CDC boundaries shift on
 small edits and break cross-version alignment.
 
-### Phase B — Auth (lab → shareable private deploy)
+### Phase B — Auth (lab → shareable private deploy)  ✅ **landed**
 
 | Step | Work | Exit criterion |
 |------|------|----------------|
@@ -71,7 +71,7 @@ small edits and break cross-version alignment.
 
 **Non-goal in B:** full multi-tenant RBAC, OAuth, Tailscale ACL integration.
 
-### Phase C — Conflict awareness (not full CRDT)
+### Phase C — Conflict awareness (not full CRDT)  ✅ **landed**
 
 | Step | Work | Exit criterion |
 |------|------|----------------|
@@ -81,7 +81,7 @@ small edits and break cross-version alignment.
 
 **Non-goal in C:** automatic 3-way merge, OT/CRDT.
 
-### Phase D — Search honesty + optional real embeddings
+### Phase D — Search honesty + optional real embeddings  ✅ **D0 landed**
 
 | Step | Work | Exit criterion |
 |------|------|----------------|
@@ -90,7 +90,7 @@ small edits and break cross-version alignment.
 
 Do **D0 immediately** if Phase A slips; never ship hype.
 
-### Phase E — Benchmarks & narrative
+### Phase E — Benchmarks & narrative  ✅ **E1/E2 microbench landed**
 
 | Step | Work | Exit criterion |
 |------|------|----------------|
@@ -128,10 +128,10 @@ attacks the exit criteria.
 ## What “at par” means (ship checklist)
 
 - [ ] 1KB edit in ≥1MB file uses ≪ full file bytes on QUIC (measured)
-- [ ] Token (or mTLS) can lock server; anonymous rejected when enabled
-- [ ] Stale concurrent write returns conflict, not silent overwrite (when policy on)
-- [ ] No “semantic” / “only diffs” claims without green checks above
-- [ ] Bench table in README vs naive full-file baseline
+- [x] Token can lock server; bad token rejected when enabled
+- [x] Stale concurrent write returns conflict when `reject_stale`
+- [x] Docs name content_search stub + measured sparse writes
+- [x] Bench table + rsync compare in `scripts/bench-edit.sh` / README
 - [ ] `cargo test` + smoke + fmt still green
 
 **Not required for par:** beating JuiceFS at distributed storage, replacing git,

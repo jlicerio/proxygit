@@ -25,6 +25,12 @@ pub const MSG_LIST_BACKUPS: u8 = 0x13;
 pub const MSG_WRITE_BLOCKS_SPARSE: u8 = 0x14;
 pub const MSG_HAS_BLOCKS: u8 = 0x15;
 pub const MSG_HAS_BLOCKS_RESP: u8 = 0x16;
+pub const MSG_AUTH: u8 = 0x17;
+pub const MSG_AUTH_OK: u8 = 0x18;
+pub const MSG_AUTH_FAIL: u8 = 0x19;
+
+/// Sparse-write flag: payload includes a 32-byte expected tree_hash after flags.
+pub const SPARSE_FLAG_EXPECTED_HASH: u8 = 0x01;
 
 /// Maximum payload size per frame (64 MB) to prevent OOM DoS
 pub const MAX_PAYLOAD_SIZE: usize = 64 * 1024 * 1024;
@@ -64,6 +70,9 @@ pub fn msg_type_name(msg_type: u8) -> &'static str {
         MSG_WRITE_BLOCKS_SPARSE => "WRITE_BLOCKS_SPARSE",
         MSG_HAS_BLOCKS => "HAS_BLOCKS",
         MSG_HAS_BLOCKS_RESP => "HAS_BLOCKS_RESP",
+        MSG_AUTH => "AUTH",
+        MSG_AUTH_OK => "AUTH_OK",
+        MSG_AUTH_FAIL => "AUTH_FAIL",
         _ => "UNKNOWN",
     }
 }
@@ -224,13 +233,28 @@ pub struct SparseChunk {
 /// Encode a sparse write payload.
 ///
 /// Wire format:
-///   [path_len:u16][path][chunk_count:u32][(hash:32B)(data_len:u32)(data)...]
-pub fn encode_sparse_write(path: &str, chunks: &[SparseChunk]) -> Vec<u8> {
+///   [path_len:u16][path][flags:u8]
+///   if flags & SPARSE_FLAG_EXPECTED_HASH: [expected_tree_hash:32B]
+///   [chunk_count:u32][(hash:32B)(data_len:u32)(data)...]
+pub fn encode_sparse_write(
+    path: &str,
+    chunks: &[SparseChunk],
+    expected_tree_hash: Option<&[u8; 32]>,
+) -> Vec<u8> {
     let path_bytes = path.as_bytes();
+    let mut flags = 0u8;
+    if expected_tree_hash.is_some() {
+        flags |= SPARSE_FLAG_EXPECTED_HASH;
+    }
     let chunks_data_len: usize = chunks.iter().map(|c| 32 + 4 + c.data.len()).sum();
-    let mut buf = Vec::with_capacity(2 + path_bytes.len() + 4 + chunks_data_len);
+    let expected_len = if expected_tree_hash.is_some() { 32 } else { 0 };
+    let mut buf = Vec::with_capacity(2 + path_bytes.len() + 1 + expected_len + 4 + chunks_data_len);
     buf.extend_from_slice(&(path_bytes.len() as u16).to_le_bytes());
     buf.extend_from_slice(path_bytes);
+    buf.push(flags);
+    if let Some(h) = expected_tree_hash {
+        buf.extend_from_slice(h);
+    }
     buf.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
     for chunk in chunks {
         buf.extend_from_slice(&chunk.hash);
@@ -240,17 +264,34 @@ pub fn encode_sparse_write(path: &str, chunks: &[SparseChunk]) -> Vec<u8> {
     buf
 }
 
-/// Decode a sparse write payload: returns (path, chunks)
-pub fn decode_sparse_write(payload: &[u8]) -> Result<(String, Vec<SparseChunk>)> {
+/// Decode a sparse write payload: returns (path, expected_tree_hash, chunks)
+pub fn decode_sparse_write(payload: &[u8]) -> Result<(String, Option<[u8; 32]>, Vec<SparseChunk>)> {
     if payload.len() < 2 {
         bail!("Sparse write payload too short");
     }
     let path_len = u16::from_le_bytes(payload[0..2].try_into()?) as usize;
-    if payload.len() < 2 + path_len + 4 {
-        bail!("Sparse write payload too short for path + chunk count");
+    if payload.len() < 2 + path_len + 1 + 4 {
+        bail!("Sparse write payload too short for path + flags + chunk count");
     }
     let path = String::from_utf8(payload[2..2 + path_len].to_vec())?;
     let mut offset = 2 + path_len;
+    let flags = payload[offset];
+    offset += 1;
+
+    let expected = if flags & SPARSE_FLAG_EXPECTED_HASH != 0 {
+        if offset + 32 > payload.len() {
+            bail!("Sparse write payload missing expected_tree_hash");
+        }
+        let h: [u8; 32] = payload[offset..offset + 32].try_into()?;
+        offset += 32;
+        Some(h)
+    } else {
+        None
+    };
+
+    if offset + 4 > payload.len() {
+        bail!("Sparse write payload missing chunk count");
+    }
     let chunk_count = u32::from_le_bytes(payload[offset..offset + 4].try_into()?) as usize;
     offset += 4;
 
@@ -274,7 +315,7 @@ pub fn decode_sparse_write(payload: &[u8]) -> Result<(String, Vec<SparseChunk>)>
         chunks.push(SparseChunk { hash, data });
     }
 
-    Ok((path, chunks))
+    Ok((path, expected, chunks))
 }
 
 // ── Hash List (HAS_BLOCKS handshake) ─────────────────────────────────

@@ -126,6 +126,21 @@ async fn handle_webdav_connection(
 }
 
 async fn process_webdav_request(req: &HttpRequest, state: &AppState) -> Vec<u8> {
+    // Optional bearer token (same PROXYGIT_TOKEN as QUIC MSG_AUTH).
+    if state.auth_required() {
+        let presented = req
+            .header("authorization")
+            .and_then(proxygit_common::auth::bearer_from_authorization);
+        if !state.check_token(presented) {
+            return make_http_response_with_headers(
+                401,
+                "text/plain",
+                b"Unauthorized\n",
+                vec![("WWW-Authenticate", "Bearer realm=\"proxygit\"")],
+            );
+        }
+    }
+
     let raw_path = req.uri.trim_start_matches('/');
     // Strip leading "webdav/" if present
     let clean_uri = if raw_path.starts_with("webdav/") {
@@ -375,9 +390,11 @@ fn make_http_response_with_headers(
         204 => "No Content",
         207 => "Multi-Status",
         400 => "Bad Request",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
         500 => "Internal Server Error",
         _ => "Unknown",
     };
