@@ -690,8 +690,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "rcgen",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",

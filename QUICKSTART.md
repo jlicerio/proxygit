@@ -281,10 +281,14 @@ paths    = ["target", "node_modules"]
 | `PROXYGIT_LISTEN` | `0.0.0.0:8080` | QUIC bind **inside** process/container |
 | `PROXYGIT_WEBDAV_LISTEN` | `0.0.0.0:3900` | WebDAV bind; **no auth** |
 | `PROXYGIT_SERVER_CERT` | search path | Client pin to server’s `server_cert.der` |
-| `PROXYGIT_TOKEN` | unset | Optional shared secret (server + client). Auth **off** when unset |
+| `PROXYGIT_TOKEN` | unset | Optional shared secret (server + client). Auth **off** when unset. `proxygit-client gen-token` |
 | `PROXYGIT_TOKEN_FILE` | unset | Token file alternative to `PROXYGIT_TOKEN` |
-| `PROXYGIT_WRITE_CONFLICT` | `last_writer_wins` | `reject_stale` enables expected-hash checks |
-| `PROXYGIT_EXPECTED_TREE_HASH` | unset | Client CLI: 64-hex base hash for conditional write |
+| `PROXYGIT_MTLS_CA` | unset | Server: path to CA cert DER; clients must present a leaf signed by it |
+| `PROXYGIT_CLIENT_CERT` | unset | Client: mTLS leaf cert DER (`proxygit-client gen-mtls`) |
+| `PROXYGIT_CLIENT_KEY` | unset | Client: mTLS leaf key DER (PKCS#8) |
+| `PROXYGIT_WRITE_CONFLICT` | `last_writer_wins` | `reject_stale` enables expected-hash checks; client auto-stats base when unset |
+| `PROXYGIT_EXPECTED_TREE_HASH` | unset | Client CLI: 64-hex base hash override for conditional write |
+| `PROXYGIT_EMBEDDING` | `features` | Server: `features` (token bag) or `hash` (BLAKE3 mock) |
 
 ## 8. Feature checklist
 
@@ -298,7 +302,7 @@ paths    = ["target", "node_modules"]
 | Server-side backup create/list/restore | ✅ |
 | Windows server / WinFSP | Future |
 | Object-store backend (Garage/S3) | Future |
-| Application-level auth | Future — trusted network only today |
+| Optional bearer token + mTLS | ✅ off by default (`PROXYGIT_TOKEN`, `PROXYGIT_MTLS_CA`) |
 
 ## 9. Troubleshooting
 

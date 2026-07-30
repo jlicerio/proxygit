@@ -32,10 +32,10 @@ writes (see limits).
 ### Honest limits (MVP)
 
 - **Sparse writes are 64 KiB block-aligned.** CLI write + WAL flush send only changed fixed-size blocks (plus a `HAS_BLOCKS` handshake on the CLI path). Not byte-granular VCDIFF; a 1‑byte edit still ships up to one 64 KiB block.
-- **`content_search` is a hash-embedding stub.** Deterministic BLAKE3 mock vectors, not a language model. Legacy MCP name `semantic_search` is an alias.
+- **`content_search` is lexical feature-hash (default), not a language model.** Token bag → 384-d vectors (`PROXYGIT_EMBEDDING=features`). Set `=hash` for the old BLAKE3 identity mock. Legacy MCP name `semantic_search` is an alias. ONNX/BGE remains optional later.
 - **“Versioned” ≠ git history.** Content-addressed blocks + tarball backups, not branches/merges.
-- **Auth is optional.** Unset `PROXYGIT_TOKEN` = open trusted-network mode. Set token (or `PROXYGIT_TOKEN_FILE`) to require QUIC `MSG_AUTH` + WebDAV `Authorization: Bearer`.
-- **Conflicts are opt-in.** Default last-writer-wins; `PROXYGIT_WRITE_CONFLICT=reject_stale` rejects stale `expected_tree_hash`.
+- **Auth is optional and layered.** Unset token + unset mTLS CA = open trusted-network mode. `PROXYGIT_TOKEN` → QUIC `MSG_AUTH` + WebDAV Bearer. `PROXYGIT_MTLS_CA` → require CA-signed client cert (`proxygit-client gen-mtls`).
+- **Conflicts are opt-in.** Default last-writer-wins; `PROXYGIT_WRITE_CONFLICT=reject_stale` rejects stale `expected_tree_hash`. In reject mode the CLI/MCP auto-stats the current base when you omit the hash.
 
 ### Sparse write microbench (loopback, release)
 
@@ -48,6 +48,7 @@ writes (see limits).
 
 Includes fixed 64 KiB changed block + per-block hash headers for the whole file.
 Handshake (`HAS_BLOCKS`) is extra (~0.5–1 KiB) and not in the payload column.
+The same script also prints rsync/cp (and scp when loopback SSH works) whole-file baselines.
 Re-run the script after protocol changes before citing new numbers.
 
 ### What it is not
@@ -67,11 +68,12 @@ Re-run the script after protocol changes before citing new numbers.
 | FUSE mount | Optional (`--features fuse`, macOS/Linux) |
 | Content-addressed block storage (FastCDC + BLAKE3) | ✅ |
 | Sparse wire write (64 KiB block diff + `HAS_BLOCKS`) | ✅ |
-| Content-hash search (`content_search`) | ✅ BLAKE3 mock embeddings (not ML) |
-| Real semantic embeddings (BGE/ONNX) | ❌ roadmap |
-| Optimistic concurrency (`expected_tree_hash`) | ✅ optional `PROXYGIT_WRITE_CONFLICT=reject_stale` |
+| Content search (`content_search`) | ✅ feature-hash embeddings (default); `hash` mock optional |
+| ONNX / BGE language-model embeddings | ❌ roadmap |
+| Optimistic concurrency (`expected_tree_hash`) | ✅ optional `PROXYGIT_WRITE_CONFLICT=reject_stale` (+ auto base hash) |
 | CRDT / automatic merge | ❌ |
-| Client auth (optional bearer token) | ✅ off by default (`PROXYGIT_TOKEN`) |
+| Client auth (optional bearer token) | ✅ off by default (`PROXYGIT_TOKEN` / `gen-token`) |
+| Optional mTLS (client certs) | ✅ off by default (`PROXYGIT_MTLS_CA` / `gen-mtls`) |
 | Garage S3 backend, A2A bus | Roadmap — see [`ARCHITECTURE-ROADMAP.md`](ARCHITECTURE-ROADMAP.md) |
 
 ### Platform matrix
@@ -193,7 +195,7 @@ When the client runs in MCP mode, agents get:
 | `list_directory` | Directory listing |
 | `stat` | Size / mtime / hash metadata |
 | `get_project_map` | Full tree in one round-trip |
-| `content_search` | **MVP stub** — BLAKE3 hash-embedding neighbors (alias: `semantic_search`) |
+| `content_search` | Feature-hash neighbors (default) or BLAKE3 mock (`PROXYGIT_EMBEDDING=hash`); alias: `semantic_search` |
 
 A checked-out ProxyGit workspace may also contain a `.proxygit` TOML manifest so
 agents can discover `server`, `uuid`, and MCP endpoint without hard-coding hosts.
@@ -205,27 +207,31 @@ agents can discover `server`, `uuid`, and MCP endpoint without hard-coding hosts
 | `PROXYGIT_DATA_DIR` | `/tmp/proxygit-server/data` (binary) / `/data` (Docker) | Indexes, blocks, certs, backups |
 | `PROXYGIT_LISTEN` | `0.0.0.0:8080` | QUIC bind address |
 | `PROXYGIT_WEBDAV_LISTEN` | `0.0.0.0:3900` | WebDAV bind address |
+| `PROXYGIT_TOKEN` / `_FILE` | unset | Optional bearer (server + client); off when unset |
+| `PROXYGIT_MTLS_CA` | unset | Server: require client certs signed by this CA DER |
+| `PROXYGIT_CLIENT_CERT` / `_KEY` | unset | Client: present mTLS leaf (use `gen-mtls`) |
+| `PROXYGIT_WRITE_CONFLICT` | `last_writer_wins` | `reject_stale` → expected-hash checks (+ auto base) |
+| `PROXYGIT_EXPECTED_TREE_HASH` | unset | CLI override for conditional write (64 hex) |
+| `PROXYGIT_EMBEDDING` | `features` | `features` = token bag; `hash` = BLAKE3 mock |
 
 Client defaults (overridable later via config file / flags): mount and cache under
 `/tmp/proxygit/…`, server `127.0.0.1:8080`.
 
 ## Security
+**Default posture: trusted network (lab / VPN / localhost).** Auth layers are optional and off until configured.
 
-**Current posture: trusted network only (lab / VPN / localhost).**
-
-- WebDAV is plain HTTP with **no authentication**.
-- QUIC uses a self-signed server cert and **`with_no_client_auth()`** — any client
-  that can reach the port and accept the cert can read/write.
-- There is no multi-user ACL, token gate, or rate limit in the MVP.
+- **Bearer token** — set `PROXYGIT_TOKEN` (or `_FILE`) on server *and* client. QUIC first stream = `MSG_AUTH`; WebDAV needs `Authorization: Bearer`. Generate with `proxygit-client gen-token`.
+- **mTLS** — set `PROXYGIT_MTLS_CA` on the server to a CA cert DER. Clients set `PROXYGIT_CLIENT_CERT` + `PROXYGIT_CLIENT_KEY`. Bundle helper: `proxygit-client gen-mtls ./mtls`.
+- **WebDAV** remains plain HTTP (Bearer only when token mode is on) — still not public-internet safe without a private path.
+- No multi-tenant RBAC or rate limits yet.
 
 Recommended deployment:
 
 1. Bind to `127.0.0.1` for single-machine use, **or**
 2. Place the server on a private overlay (Tailscale, WireGuard, VPC) and do **not**
    publish `8080/udp` or `3900/tcp` to the public internet.
-3. Treat project UUIDs as unguessable *capabilities*, not as real auth.
-
-Auth (mTLS / bearer tokens) is tracked in design notes under `docs/design/`.
+3. Prefer token and/or mTLS when more than one trusted host can reach the ports.
+4. Treat project UUIDs as unguessable *capabilities*, not as real auth.
 
 ## Repo layout
 

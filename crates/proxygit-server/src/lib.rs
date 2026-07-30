@@ -121,6 +121,10 @@ pub async fn run_server(listen_addr: SocketAddr, data_dir: PathBuf) -> Result<()
 
     let mut embeddings_idx = embeddings::EmbeddingIndex::new(&data_dir);
     embeddings_idx.load()?;
+    info!(
+        "Embedding backend: {} (PROXYGIT_EMBEDDING=features|hash)",
+        embeddings_idx.backend.as_str()
+    );
 
     let auth_token = proxygit_common::auth::load_token_from_env()?;
     let write_conflict = WriteConflictPolicy::from_env();
@@ -219,9 +223,49 @@ pub fn make_server_config(data_dir: &Path) -> Result<quinn::ServerConfig> {
         )
     };
 
-    let mut tls_config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert_der], key)?;
+    let mut client_roots = rustls::RootCertStore::empty();
+    let mtls_ca = std::env::var("PROXYGIT_MTLS_CA")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let mtls_enabled = match &mtls_ca {
+        Some(ca_path) => {
+            let ca_bytes = std::fs::read(ca_path)
+                .with_context(|| format!("read PROXYGIT_MTLS_CA at {ca_path}"))?;
+            let ca_der: rustls::pki_types::CertificateDer = ca_bytes.into();
+            client_roots
+                .add(ca_der)
+                .context("add mTLS CA to client root store")?;
+            info!("mTLS ENABLED (PROXYGIT_MTLS_CA={ca_path}); clients must present CA-signed cert");
+            true
+        }
+        None => {
+            info!(
+                "mTLS DISABLED (set PROXYGIT_MTLS_CA to a CA cert DER path to require client certs)"
+            );
+            false
+        }
+    };
+
+    let mut tls_config = if mtls_enabled {
+        let provider = rustls::crypto::CryptoProvider::get_default()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
+        let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+            Arc::new(client_roots),
+            provider.clone(),
+        )
+        .build()
+        .context("build mTLS client cert verifier")?;
+        rustls::ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .context("TLS 1.3 only for QUIC mTLS")?
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(vec![cert_der], key)?
+    } else {
+        rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], key)?
+    };
 
     tls_config.max_early_data_size = 0;
     tls_config.alpn_protocols = vec![b"proxygit-1".to_vec()];

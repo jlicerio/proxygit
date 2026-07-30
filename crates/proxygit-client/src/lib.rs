@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use quinn::Endpoint;
 use tracing::{info, warn};
 
@@ -23,6 +23,30 @@ fn parse_hex_tree_hash(s: &str) -> Option<[u8; 32]> {
         out[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
     }
     Some(out)
+}
+
+fn auto_base_hash_enabled() -> bool {
+    matches!(
+        std::env::var("PROXYGIT_WRITE_CONFLICT")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "reject_stale" | "reject" | "strict"
+    )
+}
+
+/// Resolve the server's current content hash for optimistic concurrency.
+/// Missing file → all-zero hash (server treats as "create").
+async fn fetch_base_tree_hash(pool: &StreamPool, project_id: uuid::Uuid, path: &str) -> [u8; 32] {
+    let st = mcp_stat(pool, project_id, path).await;
+    if let Some(h) = st
+        .get("tree_hash")
+        .and_then(|v| v.as_str())
+        .and_then(parse_hex_tree_hash)
+    {
+        return h;
+    }
+    [0u8; 32]
 }
 
 /// A bounded pool of pre-opened bidirectional QUIC streams.
@@ -117,9 +141,39 @@ pub async fn connect_to_server_with_cert(
         warn!("No pinned server_cert.der found; TLS verification requires pinned cert or CA");
     }
 
-    let mut tls_config = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let client_cert = std::env::var("PROXYGIT_CLIENT_CERT")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let client_key = std::env::var("PROXYGIT_CLIENT_KEY")
+        .ok()
+        .filter(|s| !s.is_empty());
+
+    let mut tls_config = match (&client_cert, &client_key) {
+        (Some(cert_path), Some(key_path)) => {
+            let cert_bytes = std::fs::read(cert_path)
+                .with_context(|| format!("read PROXYGIT_CLIENT_CERT at {cert_path}"))?;
+            let key_bytes = std::fs::read(key_path)
+                .with_context(|| format!("read PROXYGIT_CLIENT_KEY at {key_path}"))?;
+            let cert_der: rustls::pki_types::CertificateDer = cert_bytes.into();
+            let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(
+                rustls::pki_types::PrivatePkcs8KeyDer::from(key_bytes),
+            );
+            info!(
+                "mTLS client cert enabled (cert={}, key={})",
+                cert_path, key_path
+            );
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_client_auth_cert(vec![cert_der], key_der)
+                .context("build TLS client config with client cert")?
+        }
+        (None, None) => rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+        _ => anyhow::bail!(
+            "Set both PROXYGIT_CLIENT_CERT and PROXYGIT_CLIENT_KEY for mTLS, or neither"
+        ),
+    };
     tls_config.alpn_protocols = vec![b"proxygit-1".to_vec()];
 
     let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)?;
@@ -271,6 +325,10 @@ pub async fn mcp_write_file(
 }
 
 /// Write with optional optimistic-concurrency base hash (32-byte BLAKE3 of prior content).
+///
+/// When `expected_tree_hash` is `None` and `PROXYGIT_WRITE_CONFLICT` is
+/// `reject_stale`/`reject`/`strict`, the client stats the path and sends the
+/// current `tree_hash` automatically (new files use the all-zero hash).
 pub async fn mcp_write_file_opts(
     pool: &StreamPool,
     project_id: uuid::Uuid,
@@ -278,6 +336,14 @@ pub async fn mcp_write_file_opts(
     content: &[u8],
     expected_tree_hash: Option<[u8; 32]>,
 ) -> serde_json::Value {
+    let expected_tree_hash = match expected_tree_hash {
+        Some(h) => Some(h),
+        None if auto_base_hash_enabled() => {
+            Some(fetch_base_tree_hash(pool, project_id, path).await)
+        }
+        None => None,
+    };
+
     const BLOCK_SIZE: usize = 65536; // 64KB fixed-size blocks
 
     let mut sparse_chunks: Vec<SparseChunk> = Vec::new();
@@ -463,7 +529,8 @@ pub async fn mcp_stat(pool: &StreamPool, project_id: uuid::Uuid, path: &str) -> 
                             "path": entry.path,
                             "size": entry.size,
                             "mode": entry.mode,
-                            "mtime": entry.mtime
+                            "mtime": entry.mtime,
+                            "tree_hash": entry.tree_hash
                         })
                     } else {
                         serde_json::json!({ "error": "deserialization error" })
@@ -484,7 +551,7 @@ pub async fn mcp_stat(pool: &StreamPool, project_id: uuid::Uuid, path: &str) -> 
     }
 }
 
-/// Content-hash search over project files (BLAKE3 mock embeddings — not a language model).
+/// Content search over project files (feature-hash embeddings by default).
 /// Prefer [`mcp_content_search`]. Kept as alias for older callers.
 pub async fn mcp_semantic_search(
     pool: &StreamPool,

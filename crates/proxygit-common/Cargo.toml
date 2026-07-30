@@ -12,3 +12,7 @@ blake3.workspace = true
 uuid.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+rcgen.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

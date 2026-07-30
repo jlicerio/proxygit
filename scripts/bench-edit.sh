@@ -161,14 +161,12 @@ PY
 
 echo ""
 echo "═══════════════════════════════════════"
-echo "  Compare: rsync of same 1 KiB edit"
+echo "  Competitive baselines (same 1 KiB edit)"
 echo "═══════════════════════════════════════"
-# Baseline: rsync must ship the whole file (no rolling hash delta without --inplace tricks).
-# We time a full-file rsync to a fresh dest after the edit — honest "replace remote file" cost.
+# Baseline A: rsync --checksum whole-file replace (no rolling-hash delta without --inplace).
 RSYNC_SRC="$WORK/rsync-src"
 RSYNC_DST="$WORK/rsync-dst"
 mkdir -p "$RSYNC_SRC" "$RSYNC_DST"
-# Seed dest with original; src gets the edited file so rsync has work to do.
 cp "$WORK/bigfile.txt" "$RSYNC_DST/bigfile.txt"
 cp "$WORK/bigfile-edit.txt" "$RSYNC_SRC/bigfile.txt"
 START_NS=$(python3 -c 'import time; print(time.time_ns())')
@@ -177,8 +175,54 @@ END_NS=$(python3 -c 'import time; print(time.time_ns())')
 RSYNC_MS=$(python3 -c "start=int('${START_NS}'); end=int('${END_NS}'); print(f'{(end-start)/1e6:.2f}')")
 RSYNC_BYTES=$(wc -c <"$WORK/bigfile-edit.txt" | tr -d ' ')
 echo "rsync --checksum wall_ms=$RSYNC_MS whole_file_bytes=$RSYNC_BYTES"
-echo "NOTE: ProxyGit edit sparse payload ~66KB above; rsync --checksum still replaces whole ~1MB file contents."
-echo "COMPARISON: proxygit_edit_payload<<rsync_whole_file_bytes (see MEASURED line)"
+
+# Baseline B: cp whole-file local replace (lower bound for full rewrite).
+CP_DST="$WORK/cp-dst"
+mkdir -p "$CP_DST"
+cp "$WORK/bigfile.txt" "$CP_DST/bigfile.txt"
+START_NS=$(python3 -c 'import time; print(time.time_ns())')
+cp "$WORK/bigfile-edit.txt" "$CP_DST/bigfile.txt"
+END_NS=$(python3 -c 'import time; print(time.time_ns())')
+CP_MS=$(python3 -c "start=int('${START_NS}'); end=int('${END_NS}'); print(f'{(end-start)/1e6:.2f}')")
+echo "cp whole-file wall_ms=$CP_MS whole_file_bytes=$RSYNC_BYTES"
+
+# Baseline C: scp loopback if available (still whole-file on the wire).
+if command -v scp >/dev/null 2>&1 && [[ -f "$HOME/.ssh/id_ed25519" || -f "$HOME/.ssh/id_rsa" || -S "${SSH_AUTH_SOCK:-}" ]]; then
+  SCP_DST="$WORK/scp-dst"
+  mkdir -p "$SCP_DST"
+  # Prefer loopback ssh; skip quietly if localhost ssh not usable.
+  if ssh -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=no 127.0.0.1 true 2>/dev/null; then
+    START_NS=$(python3 -c 'import time; print(time.time_ns())')
+    scp -o BatchMode=yes -o StrictHostKeyChecking=no \
+      "$WORK/bigfile-edit.txt" "127.0.0.1:$SCP_DST/bigfile.txt" >/dev/null 2>&1 || true
+    END_NS=$(python3 -c 'import time; print(time.time_ns())')
+    SCP_MS=$(python3 -c "start=int('${START_NS}'); end=int('${END_NS}'); print(f'{(end-start)/1e6:.2f}')")
+    echo "scp loopback wall_ms=$SCP_MS whole_file_bytes=$RSYNC_BYTES"
+  else
+    echo "scp loopback SKIPPED (ssh 127.0.0.1 not available in BatchMode)"
+  fi
+else
+  echo "scp SKIPPED (no scp or no ssh agent/key)"
+fi
+
+EDIT_PAYLOAD=$(python3 - "$LOG_FILE" <<'PY'
+import re, sys
+rows=[]
+for line in open(sys.argv[1], errors="replace"):
+    m=re.search(r"WRITE_BLOCKS_SPARSE.*payload_len=(\d+)", line)
+    if m: rows.append(int(m.group(1)))
+print(rows[1] if len(rows)>=2 else 0)
+PY
+)
+echo ""
+echo "SUMMARY TABLE (1 KiB mid-file edit of 1 MiB):"
+printf "  %-22s %12s %12s\n" "method" "payload_B" "wall_ms"
+printf "  %-22s %12s %12s\n" "----------------------" "------------" "------------"
+printf "  %-22s %12s %12s\n" "proxygit sparse edit" "$EDIT_PAYLOAD" "(see log)"
+printf "  %-22s %12s %12s\n" "rsync --checksum" "$RSYNC_BYTES" "$RSYNC_MS"
+printf "  %-22s %12s %12s\n" "cp whole-file" "$RSYNC_BYTES" "$CP_MS"
+echo "NOTE: ProxyGit ships ~one 64KiB block + hash list; rsync/cp/scp ship whole file contents."
+echo "COMPARISON: proxygit_edit_payload<<rsync_whole_file_bytes"
 
 echo "Log kept at: $LOG_FILE"
 # prevent cleanup from deleting log before user sees path — copy

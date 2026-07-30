@@ -20,6 +20,9 @@ async fn auth_token_required_when_enabled() -> Result<()> {
     let listen: SocketAddr = format!("127.0.0.1:{quic_port}").parse()?;
 
     std::env::set_var("PROXYGIT_WEBDAV_LISTEN", format!("127.0.0.1:{dav_port}"));
+    std::env::remove_var("PROXYGIT_MTLS_CA");
+    std::env::remove_var("PROXYGIT_CLIENT_CERT");
+    std::env::remove_var("PROXYGIT_CLIENT_KEY");
     std::env::set_var("PROXYGIT_TOKEN", "test-secret-token");
     std::env::remove_var("PROXYGIT_WRITE_CONFLICT");
 
@@ -73,6 +76,9 @@ async fn reject_stale_write_returns_conflict() -> Result<()> {
 
     std::env::set_var("PROXYGIT_WEBDAV_LISTEN", format!("127.0.0.1:{dav_port}"));
     std::env::remove_var("PROXYGIT_TOKEN");
+    std::env::remove_var("PROXYGIT_MTLS_CA");
+    std::env::remove_var("PROXYGIT_CLIENT_CERT");
+    std::env::remove_var("PROXYGIT_CLIENT_KEY");
     std::env::set_var("PROXYGIT_WRITE_CONFLICT", "reject_stale");
 
     let server_data = data_dir.clone();
@@ -117,6 +123,60 @@ async fn reject_stale_write_returns_conflict() -> Result<()> {
     )
     .await;
     assert_eq!(ok["status"], "ok", "{ok}");
+
+    handle.abort();
+    std::env::remove_var("PROXYGIT_WRITE_CONFLICT");
+    std::env::remove_var("PROXYGIT_WEBDAV_LISTEN");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reject_stale_auto_base_hash_on_plain_write() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let data_dir = temp.path().to_path_buf();
+    let quic_port = free_port();
+    let dav_port = free_port();
+    let listen: SocketAddr = format!("127.0.0.1:{quic_port}").parse()?;
+
+    std::env::set_var("PROXYGIT_WEBDAV_LISTEN", format!("127.0.0.1:{dav_port}"));
+    std::env::remove_var("PROXYGIT_TOKEN");
+    std::env::remove_var("PROXYGIT_MTLS_CA");
+    std::env::remove_var("PROXYGIT_CLIENT_CERT");
+    std::env::remove_var("PROXYGIT_CLIENT_KEY");
+    std::env::set_var("PROXYGIT_WRITE_CONFLICT", "reject_stale");
+
+    let server_data = data_dir.clone();
+    let handle =
+        tokio::spawn(async move { proxygit_server::run_server(listen, server_data).await });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let cert = data_dir.join("server_cert.der");
+    let conn = proxygit_client::connect_to_server_with_cert(listen, Some(cert)).await?;
+    let pool = proxygit_client::StreamPool::new(conn, 4);
+    let project = Uuid::new_v4();
+
+    // Create + sequential plain writes both auto-stat base hash.
+    let w1 = proxygit_client::mcp_write_file(&pool, project, "auto.txt", b"one").await;
+    assert_eq!(w1["status"], "ok", "{w1}");
+    let w2 = proxygit_client::mcp_write_file(&pool, project, "auto.txt", b"two").await;
+    assert_eq!(w2["status"], "ok", "{w2}");
+
+    // Explicit stale base still conflicts.
+    let stale =
+        proxygit_client::mcp_write_file_opts(&pool, project, "auto.txt", b"three", Some([0u8; 32]))
+            .await;
+    assert_eq!(
+        stale.get("error").and_then(|e| e.as_str()),
+        Some("conflict"),
+        "{stale}"
+    );
+
+    // stat exposes tree_hash for agents.
+    let st = proxygit_client::mcp_stat(&pool, project, "auto.txt").await;
+    assert!(
+        st.get("tree_hash").and_then(|h| h.as_str()).is_some(),
+        "{st}"
+    );
 
     handle.abort();
     std::env::remove_var("PROXYGIT_WRITE_CONFLICT");

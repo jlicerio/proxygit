@@ -190,7 +190,7 @@ Before exposing a server beyond localhost:
 
 - [ ] `PROXYGIT_LISTEN` / `PROXYGIT_WEBDAV_LISTEN` bound appropriately
 - [ ] Ports not published to `0.0.0.0` on a public interface
-- [ ] Operator sets `PROXYGIT_TOKEN` (or accepts trusted-network open mode)
+- [ ] Operator sets `PROXYGIT_TOKEN` and/or `PROXYGIT_MTLS_CA` (or accepts trusted-network open mode)
 - [ ] Sample manifests use placeholders, not real network identities
 
 ---

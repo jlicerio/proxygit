@@ -26,6 +26,9 @@ async fn main() -> Result<()> {
         eprintln!("Usage: proxygit-client <command> [args]");
         eprintln!("  version                           — Print version and exit");
         eprintln!("  gen-token                         — Generate a random PROXYGIT_TOKEN value");
+        eprintln!(
+            "  gen-mtls [out_dir] [cn]           — Write CA + client cert/key DERs for optional mTLS"
+        );
         eprintln!("  mount <server_addr> <project_id>  — Mount a project (FUSE / local)");
         eprintln!(
             "  mcp <server_addr> <project_id>    — Run MCP JSON-RPC 2.0 stdio server for AI agents"
@@ -52,6 +55,27 @@ async fn main() -> Result<()> {
         "version" => cmd_version().await?,
         "gen-token" => {
             println!("{}", proxygit_common::auth::generate_token());
+        }
+        "gen-mtls" => {
+            let out = args
+                .get(2)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("./proxygit-mtls"));
+            let cn = args.get(3).map(|s| s.as_str()).unwrap_or("proxygit-client");
+            proxygit_common::mtls::write_mtls_bundle(&out, cn)?;
+            println!("Wrote mTLS bundle to {}", out.display());
+            println!(
+                "  server: export PROXYGIT_MTLS_CA={}/ca_cert.der",
+                out.display()
+            );
+            println!(
+                "  client: export PROXYGIT_CLIENT_CERT={}/client_cert.der",
+                out.display()
+            );
+            println!(
+                "  client: export PROXYGIT_CLIENT_KEY={}/client_key.der",
+                out.display()
+            );
         }
         "mount" => cmd_mount(&config, &args).await?,
         "mcp" => cmd_mcp(&config, &args).await?,

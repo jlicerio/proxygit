@@ -37,10 +37,10 @@ with the current `MSG_WRITE_BLOCKS` shape, or do we need a new message type?
 
 | Gap | Why it matters | Target |
 |-----|----------------|--------|
-| mTLS / multi-tenant RBAC | Token is shared secret only | Later |
-| Automatic merge / CRDT | Only detect+reject | Later |
-| Real ML embeddings | `content_search` is hash stub | ONNX optional |
-| Mutagen/JuiceFS full parity suite | Microbench vs rsync only | Expand E |
+| mTLS optional / multi-tenant RBAC | mTLS landed; RBAC still open | RBAC later |
+| Automatic merge / CRDT | Only detect+reject (+ auto base hash) | Later |
+| Real ML embeddings | Feature-hash default; ONNX still open | ONNX optional |
+| Mutagen/JuiceFS full parity suite | rsync/cp/scp baselines in bench | Expand further if needed |
 | MCP `2024-11-05` | Agent compat drift | Bump when runners need it |
 | Byte-granular / VCDIFF deltas | 64 KiB block floor | Optional later (A3+) |
 
@@ -67,7 +67,7 @@ small edits and break cross-version alignment.
 |------|------|----------------|
 | B1 | `PROXYGIT_TOKEN` (or file) — client sends on each QUIC stream / WebDAV `Authorization: Bearer` | Request without token → reject; with token → OK |
 | B2 | Docs: token mode default-off; compose example with token | QUICKSTART section; site security blurb updated |
-| B3 | (Later) mTLS optional | Wrong client cert rejected |
+| B3 | Optional mTLS (`PROXYGIT_MTLS_CA` + client cert/key; `gen-mtls`) | Wrong/missing client cert rejected |
 
 **Non-goal in B:** full multi-tenant RBAC, OAuth, Tailscale ACL integration.
 
@@ -78,24 +78,24 @@ small edits and break cross-version alignment.
 | C1 | Write carries expected `tree_hash` (optimistic concurrency) | Stale hash → explicit conflict error, no silent clobber |
 | C2 | MCP/CLI surface conflict (`conflict` / `base_hash` / `server_hash`) | Agent can read error and re-fetch |
 | C3 | Policy flag: `last_writer_wins` (default) vs `reject_stale` | Documented; test both |
+| C4 | Auto base-hash on client when reject mode and hash omitted | Plain write succeeds sequentially under reject_stale |
 
 **Non-goal in C:** automatic 3-way merge, OT/CRDT.
 
-### Phase D — Search honesty + optional real embeddings  ✅ **D0 landed**
+### Phase D — Search honesty + feature embeddings  ✅ **D0 + D1-lite landed**
 
 | Step | Work | Exit criterion |
 |------|------|----------------|
-| D0 | Rename tool to `content_search` **or** mark `semantic_search` description as hash-stub in all UIs | No user-facing “semantic” without model |
-| D1 | (Optional) ONNX BGE-small server-side | Query “authentication middleware” returns relevant rust files on a fixture repo |
+| D0 | Rename tool to `content_search` **or** mark `semantic_search` description honestly | No user-facing “semantic ML” without model |
+| D1-lite | Feature-hashed bag-of-tokens (`PROXYGIT_EMBEDDING=features`, default); `hash` mock retained | Query with shared tokens outranks unrelated fixture |
+| D2 | (Optional) ONNX BGE-small server-side | Real LM neighbors on fixture repo |
 
-Do **D0 immediately** if Phase A slips; never ship hype.
-
-### Phase E — Benchmarks & narrative  ✅ **E1/E2 microbench landed**
+### Phase E — Benchmarks & narrative  ✅ **E1/E2 expanded**
 
 | Step | Work | Exit criterion |
 |------|------|----------------|
-| E1 | Script: create 50MB tree; edit 1KB; measure wall + wire bytes for ProxyGit write path | `scripts/bench-edit.sh` checked in, prints table |
-| E2 | Same edit via `rsync` and (if available) Mutagen | Comparison table in README “Benchmark” |
+| E1 | Script: create ~1MB file; edit 1KB; measure wall + wire bytes for ProxyGit write path | `scripts/bench-edit.sh` checked in, prints table |
+| E2 | Same edit via `rsync` / `cp` / optional `scp` | Comparison table printed by script |
 | E3 | Lossy profile optional (`tc netem`) | Numbers under profile A in roadmap |
 
 Only after A2 is green, update README/site from “roadmap” → measured claims.
