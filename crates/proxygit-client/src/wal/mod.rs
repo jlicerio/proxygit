@@ -17,7 +17,10 @@ use anyhow::{Context, Result};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use proxygit_common::protocol::MAX_PAYLOAD_SIZE;
+use proxygit_common::protocol::{
+    encode_sparse_write, recv_frame, send_frame, SparseChunk, MAX_PAYLOAD_SIZE, MSG_ERROR,
+    MSG_WRITE_ACK, MSG_WRITE_BLOCKS_SPARSE,
+};
 use proxygit_common::types::ProjectId;
 
 /// Magic constants for CRC32C-framed WAL records
@@ -327,6 +330,32 @@ impl LocalWal {
     }
 }
 
+/// Split data into fixed-size blocks, compute BLAKE3 hashes,
+/// and build SparseChunks — only include data for blocks whose
+/// hash differs from the old version.
+fn build_sparse_diff(old: &[u8], new: &[u8], block_size: usize) -> Vec<SparseChunk> {
+    let old_hashes: Vec<[u8; 32]> = old
+        .chunks(block_size)
+        .map(|c| *blake3::hash(c).as_bytes())
+        .collect();
+
+    new.chunks(block_size)
+        .enumerate()
+        .map(|(i, data)| {
+            let hash = *blake3::hash(data).as_bytes();
+            let is_unchanged = i < old_hashes.len() && old_hashes[i] == hash;
+            SparseChunk {
+                hash,
+                data: if is_unchanged {
+                    Vec::new()
+                } else {
+                    data.to_vec()
+                },
+            }
+        })
+        .collect()
+}
+
 /// Background worker that periodically flushes WAL records over QUIC to the server.
 pub fn start_wal_flush_worker(
     wal: Arc<LocalWal>,
@@ -399,7 +428,7 @@ pub fn start_wal_flush_worker(
                         }
                     };
 
-                    let mut content = base;
+                    let mut content = base.clone();
                     for patch in &patches {
                         let end = patch.offset as usize + patch.data.len();
                         if end > content.len() {
@@ -408,7 +437,42 @@ pub fn start_wal_flush_worker(
                         content[patch.offset as usize..end].copy_from_slice(&patch.data);
                     }
 
-                    let res = crate::mcp_write_file(&pool, project_id, &path, &content).await;
+                    // Use fixed-size block diff for sparse write.
+                    // Instead of CDC (which shifts all chunk boundaries for a 1KB edit),
+                    // use 64KB fixed blocks and only send changed blocks' data.
+                    let sparse_chunks = build_sparse_diff(&base, &content, 65536);
+                    let payload = encode_sparse_write(&path, &sparse_chunks);
+                    let hash = blake3::hash(&payload).into();
+
+                    let res = match pool.borrow().await {
+                        Ok((mut send, mut recv)) => {
+                            if let Err(e) = send_frame(
+                                &mut send,
+                                MSG_WRITE_BLOCKS_SPARSE,
+                                project_id.as_u128(),
+                                &hash,
+                                &payload,
+                            )
+                            .await
+                            {
+                                serde_json::json!({ "error": format!("send error: {e}") })
+                            } else {
+                                match recv_frame(&mut recv).await {
+                                    Ok(resp) if resp.msg_type == MSG_WRITE_ACK => {
+                                        serde_json::json!({ "status": "ok", "tree_hash": String::from_utf8_lossy(&resp.payload).to_string() })
+                                    }
+                                    Ok(resp) if resp.msg_type == MSG_ERROR => {
+                                        serde_json::json!({ "error": String::from_utf8_lossy(&resp.payload).to_string() })
+                                    }
+                                    Ok(_) => serde_json::json!({ "error": "unexpected response" }),
+                                    Err(e) => {
+                                        serde_json::json!({ "error": format!("recv error: {e}") })
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => serde_json::json!({ "error": format!("pool error: {e}") }),
+                    };
                     if res["status"] == "ok" {
                         // Invalidate local read cache on successful flush
                         let cache_path =
@@ -445,6 +509,51 @@ pub fn start_wal_flush_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_build_sparse_diff_identical_content() {
+        let data = vec![0u8; 65536 * 4];
+        let chunks = build_sparse_diff(&data, &data, 65536);
+        assert_eq!(chunks.len(), 4);
+        for chunk in &chunks {
+            assert!(chunk.data.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_build_sparse_diff_small_edit() {
+        let old = vec![b'A'; 65536 * 16];
+        let mut new = old.clone();
+        new[65536 * 8 + 1000..65536 * 8 + 2024].fill(b'Z');
+        let chunks = build_sparse_diff(&old, &new, 65536);
+        let changed: Vec<_> = chunks.iter().filter(|c| !c.data.is_empty()).collect();
+        assert!(
+            changed.len() <= 2,
+            "at most 2 blocks, got {}",
+            changed.len()
+        );
+    }
+
+    #[test]
+    fn test_build_sparse_diff_new_file() {
+        let old = vec![];
+        let new = vec![b'B'; 65536 * 2];
+        let chunks = build_sparse_diff(&old, &new, 65536);
+        assert_eq!(chunks.len(), 2);
+        for chunk in &chunks {
+            assert!(!chunk.data.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_build_sparse_diff_tail_block() {
+        let old = vec![b'C'; 70000];
+        let mut new = old.clone();
+        new[65500] = b'D';
+        let chunks = build_sparse_diff(&old, &new, 65536);
+        let changed: Vec<_> = chunks.iter().filter(|c| !c.data.is_empty()).collect();
+        assert_eq!(changed.len(), 1);
+    }
 
     #[test]
     fn test_read_staged_records_partial_tail_returns_ok() {

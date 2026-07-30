@@ -4,7 +4,8 @@
 
 ProxyGit lets multiple agents and developers share one remote project tree through
 a small Rust server. Files are stored as content-addressed blocks; clients reach
-them via QUIC, WebDAV, CLI, or MCP. (Wire delta transfer is still roadmap — see limits below.)
+them via QUIC, WebDAV, CLI, or MCP. Small edits reuse server blocks via sparse
+writes (see limits).
 
 ```
   Agent / IDE / shell                 Your LAN or VPN
@@ -30,10 +31,23 @@ them via QUIC, WebDAV, CLI, or MCP. (Wire delta transfer is still roadmap — se
 
 ### Honest limits (MVP)
 
-- **Writes are whole-file today.** FastCDC+BLAKE3 content-address the stored blocks on the server, but the client write/WAL flush path still uploads the full file contents (fetch → patch locally → write back). True delta/VCDIFF transfer is roadmap.
+- **Sparse writes are 64 KiB block-aligned.** CLI write + WAL flush send only changed fixed-size blocks (plus a `HAS_BLOCKS` handshake on the CLI path). Not byte-granular VCDIFF; a 1‑byte edit still ships up to one 64 KiB block.
 - **“Semantic search” is a stub.** Embeddings are deterministic BLAKE3 mock vectors, not a real language model.
 - **“Versioned” ≠ git history.** You get content-addressed blocks + explicit tarball backups, not per-change branches/merges.
 - **No app auth / no conflict merge.** Trusted network only; concurrent writers are last-writer-wins.
+
+### Sparse write microbench (loopback, release)
+
+`scripts/bench-edit.sh` — 1 MiB file, then a 1 KiB mid-file edit:
+
+| Step | `WRITE_BLOCKS_SPARSE` payload | vs file |
+|------|-------------------------------|---------|
+| Initial write | 1 049 169 B | ~100% |
+| 1 KiB edit rewrite | **66 129 B** | **~6.3%** (~15.9× smaller) |
+
+Includes fixed 64 KiB changed block + per-block hash headers for the whole file.
+Handshake (`HAS_BLOCKS`) is extra (~0.5–1 KiB) and not in the payload column.
+Re-run the script after protocol changes before citing new numbers.
 
 ### What it is not
 
@@ -51,7 +65,7 @@ them via QUIC, WebDAV, CLI, or MCP. (Wire delta transfer is still roadmap — se
 | WebDAV native mount (`:3900`) | ✅ |
 | FUSE mount | Optional (`--features fuse`, macOS/Linux) |
 | Content-addressed block storage (FastCDC + BLAKE3) | ✅ |
-| Wire delta transfer (only changed bytes on the network) | ❌ roadmap |
+| Sparse wire write (64 KiB block diff + `HAS_BLOCKS`) | ✅ |
 | Real semantic embeddings (BGE/ONNX) | ❌ mock hash embeddings only |
 | Conflict resolution / CRDT / OT | ❌ last-writer-wins |
 | Client auth (mTLS / tokens) | ❌ trusted-network only |

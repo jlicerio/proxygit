@@ -6,12 +6,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use quinn::Endpoint;
 use tracing::{info, warn};
 
 use proxygit_common::protocol::*;
-use proxygit_common::types::{ClientConfig, FileEntry};
+use proxygit_common::types::FileEntry;
 
 /// A bounded pool of pre-opened bidirectional QUIC streams.
 /// Avoids the overhead of calling `conn.open_bi()` for every MCP tool invocation.
@@ -232,14 +232,89 @@ pub async fn mcp_write_file(
     path: &str,
     content: &[u8],
 ) -> serde_json::Value {
-    let payload = encode_write_payload(path, content);
+    const BLOCK_SIZE: usize = 65536; // 64KB fixed-size blocks
+
+    // 1. Split content into 64KB fixed-size blocks, compute BLAKE3 hashes
+    let mut sparse_chunks: Vec<SparseChunk> = Vec::new();
+    let mut all_hashes: Vec<[u8; 32]> = Vec::new();
+    for data in content.chunks(BLOCK_SIZE) {
+        let hash = *blake3::hash(data).as_bytes();
+        all_hashes.push(hash);
+        sparse_chunks.push(SparseChunk {
+            hash,
+            data: data.to_vec(),
+        });
+    }
+
+    // 2. Hash handshake: query server for already-known blocks.
+    //    Uses its own stream (streams are one-shot). Falls back to
+    //    sending all data if the handshake fails.
+    let known_hashes: Vec<[u8; 32]> = match pool.borrow().await {
+        Ok((mut send, mut recv)) => {
+            let query_payload = encode_hash_list(&all_hashes);
+            let hash = blake3::hash(&query_payload).into();
+            if let Err(e) = send_frame(
+                &mut send,
+                MSG_HAS_BLOCKS,
+                project_id.as_u128(),
+                &hash,
+                &query_payload,
+            )
+            .await
+            {
+                warn!("HAS_BLOCKS send failed: {e}; falling back to full send");
+                Vec::new()
+            } else {
+                match recv_frame(&mut recv).await {
+                    Ok(resp) if resp.msg_type == MSG_HAS_BLOCKS_RESP => {
+                        match decode_hash_list(&resp.payload) {
+                            Ok((_, hashes)) => hashes,
+                            Err(e) => {
+                                warn!("HAS_BLOCKS_RESP decode: {e}; full send");
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Ok(resp) if resp.msg_type == MSG_ERROR => {
+                        warn!(
+                            "HAS_BLOCKS server error: {}; full send",
+                            String::from_utf8_lossy(&resp.payload)
+                        );
+                        Vec::new()
+                    }
+                    Ok(_) => {
+                        warn!("HAS_BLOCKS unexpected response; full send");
+                        Vec::new()
+                    }
+                    Err(e) => {
+                        warn!("HAS_BLOCKS recv error: {e}; full send");
+                        Vec::new()
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            warn!("HAS_BLOCKS pool error: {e}; falling back to full send");
+            Vec::new()
+        }
+    };
+
+    // 3. Mark known blocks with empty data (hash-only reference)
+    for chunk in &mut sparse_chunks {
+        if known_hashes.contains(&chunk.hash) {
+            chunk.data.clear();
+        }
+    }
+
+    // 4. Encode sparse write payload
+    let payload = encode_sparse_write(path, &sparse_chunks);
     let hash = blake3::hash(&payload).into();
 
     match pool.borrow().await {
         Ok((mut send, mut recv)) => {
             if let Err(e) = send_frame(
                 &mut send,
-                MSG_WRITE_BLOCKS,
+                MSG_WRITE_BLOCKS_SPARSE,
                 project_id.as_u128(),
                 &hash,
                 &payload,

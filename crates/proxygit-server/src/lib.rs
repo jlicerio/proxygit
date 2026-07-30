@@ -17,6 +17,7 @@ use tar::Archive as TarArchive;
 use tar::Builder as TarBuilder;
 use tracing::{info, warn};
 
+use proxygit_common::cdc::ChunkResult;
 use proxygit_common::protocol::*;
 use proxygit_common::types::ProjectId;
 
@@ -238,6 +239,12 @@ pub async fn handle_bi_stream(
         MSG_LIST_BACKUPS => {
             handle_list_backups(frame, &mut send, &state).await?;
         }
+        MSG_HAS_BLOCKS => {
+            handle_has_blocks(frame, &mut send, &state).await?;
+        }
+        MSG_WRITE_BLOCKS_SPARSE => {
+            handle_write_blocks_sparse(frame, &mut send, &state).await?;
+        }
         other => {
             warn!("Unknown message type: 0x{other:02x}");
             send_frame(
@@ -430,6 +437,134 @@ pub async fn handle_write_blocks(
     }
 
     let tree_hash = blake3::hash(content);
+    let ack = serde_json::json!({ "path": path, "tree_hash": tree_hash.to_hex().to_string() });
+    let payload = serde_json::to_vec(&ack)?;
+    let hash = blake3::hash(&payload).into();
+    send_frame(send, MSG_WRITE_ACK, frame.project_id, &hash, &payload).await
+}
+
+/// Handle MSG_HAS_BLOCKS (0x15) — query which blocks already exist on server.
+///
+/// Receives a list of hashes from the client, checks each against the block store,
+/// and returns a response containing only the hashes that are already stored.
+pub async fn handle_has_blocks(
+    frame: Frame,
+    send: &mut quinn::SendStream,
+    state: &AppState,
+) -> Result<()> {
+    let (_count, hashes) = match decode_hash_list(&frame.payload) {
+        Ok(v) => v,
+        Err(e) => {
+            return send_frame(
+                send,
+                MSG_ERROR,
+                frame.project_id,
+                &[0u8; 32],
+                format!("Invalid hash list: {e}").as_bytes(),
+            )
+            .await;
+        }
+    };
+
+    let mut known_hashes = Vec::with_capacity(hashes.len());
+    for hash in &hashes {
+        if state.block_store.get_block(hash).is_some() {
+            known_hashes.push(*hash);
+        }
+    }
+
+    let payload = encode_hash_list(&known_hashes);
+    let hash = blake3::hash(&payload).into();
+    send_frame(send, MSG_HAS_BLOCKS_RESP, frame.project_id, &hash, &payload).await
+}
+
+/// Handle MSG_WRITE_BLOCKS_SPARSE (0x14) — sparse write with hash list.
+///
+/// The client sends only the chunks that changed (with data) plus the
+/// hashes of all chunks (both new and unchanged). The server stores new
+/// block data, skips chunks already on disk, and indexes the full hash list.
+pub async fn handle_write_blocks_sparse(
+    frame: Frame,
+    send: &mut quinn::SendStream,
+    state: &AppState,
+) -> Result<()> {
+    let (raw_path, sparse_chunks) = match decode_sparse_write(&frame.payload) {
+        Ok(v) => v,
+        Err(e) => {
+            return send_frame(
+                send,
+                MSG_ERROR,
+                frame.project_id,
+                &[0u8; 32],
+                format!("Invalid sparse payload: {e}").as_bytes(),
+            )
+            .await;
+        }
+    };
+
+    let path = match sanitize_path(&raw_path) {
+        Ok(p) => p,
+        Err(e) => {
+            return send_frame(
+                send,
+                MSG_ERROR,
+                frame.project_id,
+                &[0u8; 32],
+                e.to_string().as_bytes(),
+            )
+            .await;
+        }
+    };
+
+    let project_id = ProjectId::from_u128(frame.project_id);
+
+    // 1. Store new blocks (chunks with non-empty data)
+    for chunk in &sparse_chunks {
+        if !chunk.data.is_empty() {
+            state.block_store.store_block(&chunk.hash, &chunk.data)?;
+        }
+    }
+
+    // 2. Build ChunkResult list for indexing
+    let mut chunks = Vec::with_capacity(sparse_chunks.len());
+    let mut offset: u64 = 0;
+    for sc in &sparse_chunks {
+        let data = if !sc.data.is_empty() {
+            sc.data.clone()
+        } else {
+            // Hash-only reference — block already exists on server
+            state
+                .block_store
+                .get_block(&sc.hash)
+                .ok_or_else(|| anyhow::anyhow!("Block {} not found", hex::encode(sc.hash)))?
+        };
+        let length = data.len();
+        let hash = blake3::Hash::from_bytes(sc.hash);
+        chunks.push(ChunkResult {
+            offset,
+            length,
+            hash,
+            data,
+        });
+        offset += length as u64;
+    }
+
+    // 3. Index the file (deletes old block mappings, inserts new ones)
+    state.indexer.ingest_chunks(&project_id, &path, &chunks)?;
+
+    // 4. Update embedding index for semantic search
+    let full_data: Vec<u8> = chunks.iter().flat_map(|c| c.data.iter().copied()).collect();
+    let embedding = embeddings::compute_embedding(&full_data);
+    {
+        let mut idx = state.embeddings.lock().unwrap();
+        idx.set(&path, embedding);
+        if let Err(e) = idx.save() {
+            warn!("Failed to save embeddings: {e}");
+        }
+    }
+
+    // 5. Respond with WRITE_ACK
+    let tree_hash = blake3::hash(&full_data);
     let ack = serde_json::json!({ "path": path, "tree_hash": tree_hash.to_hex().to_string() });
     let payload = serde_json::to_vec(&ack)?;
     let hash = blake3::hash(&payload).into();

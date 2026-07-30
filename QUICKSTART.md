@@ -261,6 +261,16 @@ tools = ["read_file", "write_file", "list_directory", "stat", "get_project_map",
 
 [webdav]
 url = "http://127.0.0.1:3900/webdav/00000000-0000-0000-0000-000000000001/"
+
+[build]
+command  = "cargo build --release"
+dev      = "cargo watch -x run"
+artifact = "target/release/myapp"
+
+[cache]
+strategy = "ram_disk"    # ram_disk | local_dir | none
+size     = "4GB"
+paths    = ["target", "node_modules"]
 ```
 
 ## 7. Environment reference

@@ -194,7 +194,8 @@ proxygit-client mcp   $SERVER $PROJECT   # agent tools on stdio</pre>
     <section>
       <h2>Honest MVP limits</h2>
       <ul>
-        <li><strong>Whole-file writes on the wire today.</strong> Server stores FastCDC/BLAKE3 blocks, but client write + WAL flush still fetch/patch/upload full file bytes. Delta transfer is roadmap.</li>
+        <li><strong>Sparse writes are 64&nbsp;KiB block-aligned.</strong> Unchanged blocks are hash-only on the wire after <code>HAS_BLOCKS</code>; not byte-granular VCDIFF. A 1‑byte edit can still send one full 64&nbsp;KiB block.</li>
+        <li><strong>Measured:</strong> 1&nbsp;MiB file → ~1.05&nbsp;MB first sparse write; 1&nbsp;KiB mid-file edit → <strong>66&nbsp;KB</strong> payload (~16×) via <code>scripts/bench-edit.sh</code>.</li>
         <li><strong>Semantic search is a stub</strong> — BLAKE3 mock embeddings, not a real model.</li>
         <li><strong>Not git versioning</strong> — content-addressed storage + tarball backups, not branches/merges.</li>
         <li><strong>No app auth / no conflict merge</strong> — trusted network only; last-writer-wins.</li>

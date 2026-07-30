@@ -13,7 +13,10 @@ use proxygit_common::types::{ClientConfig, ProjectConfig};
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter("proxygit_client=debug,info")
+        .with_env_filter(
+            std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| "proxygit_client=debug,proxygit::wire=info,info".into()),
+        )
         .init();
 
     let config = ClientConfig::default();

@@ -8,7 +8,10 @@ use anyhow::{Context, Result};
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter("proxygit_server=debug,info")
+        .with_env_filter(
+            std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| "proxygit_server=debug,proxygit::wire=info,info".into()),
+        )
         .init();
 
     let data_dir = std::env::var("PROXYGIT_DATA_DIR")

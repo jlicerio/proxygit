@@ -31,39 +31,35 @@ with the current `MSG_WRITE_BLOCKS` shape, or do we need a new message type?
 | 0-RTT write replay | `max_early_data_size = 0` |
 | MCP binary writes | `base64_content` field exists |
 | Stream pool | client `StreamPool` in use |
+| **Sparse wire writes (Phase A)** | `MSG_WRITE_BLOCKS_SPARSE` + `HAS_BLOCKS`; WAL `build_sparse_diff` 64 KiB; `scripts/bench-edit.sh` |
 
 ## Still false / weak (the gap list)
 
 | Gap | Why it matters | Target |
 |-----|----------------|--------|
-| Wire path is whole-file | WAL flush fetch→patch→full upload | Delta or chunk-sparse write on wire |
 | No auth | Cannot leave lab overlay | Shared secret or mTLS |
 | No conflicts | Two agents clobber | Detect + surface; then simple policy |
 | Mock “semantic” search | Misleading tool name | Real model **or** rename to hash search |
-| No competitive numbers | Claims are vibes | Bench vs baseline rsync/Mutagen-class |
+| No competitive numbers vs rsync/Mutagen | Claims are vibes | Bench table in README |
 | MCP `2024-11-05` | Agent compat drift | Bump when runners need it |
+| Byte-granular / VCDIFF deltas | 64 KiB block floor | Optional later (A3+) |
 
 ---
 
 ## Phases (risk order)
 
-### Phase A — Make “incremental” real on the wire  ← **start here**
+### Phase A — Make “incremental” real on the wire  ✅ **landed**
 
-**Why first:** this is the core differentiator we already almost have in storage
-but lie about on the network. Auth without this = secure slow rsync.
+| Step | Status | Notes |
+|------|--------|-------|
+| A0 wire logging | ✅ | `log_wire_bytes` + `scripts/bench-edit.sh` |
+| A1 sparse protocol | ✅ | `0x14` / `0x15` / `0x16`; server handlers |
+| A2 WAL + CLI sparse | ✅ | Fixed 64 KiB diff (not CDC-for-diff) |
+| A3 zstd payloads | ⬜ optional | |
 
-| Step | Work | Exit criterion (observable) |
-|------|------|------------------------------|
-| A0 | Spike: instrument bytes-on-wire for `write` of 1KB edit to 1MB file | Log line: `wire_bytes=` before/after; document number |
-| A1 | Protocol: sparse write — send only new/changed chunk hashes + data (reuse CDC on client; server already stores by hash) | Server accepts sparse write; unchanged chunks not re-uploaded |
-| A2 | WAL flush uses A1 (stop full-file `mcp_write_file` of merged buffer) | 1KB edit bench: wire_bytes **≤ 64KB** (stretch &lt;20KB with compress) |
-| A3 | Optional: zstd on chunk payloads | Same bench improves further on text |
-
-**Non-goal in A:** VCDIFF perfection, group-commit WAL, JuiceFS parity.
-
-**Decision log seed:** Prefer **chunk-sparse WRITE** over VCDIFF first — server
-already content-addresses chunks; client just shouldn’t resend bytes the server
-has. Revisit VCDIFF if chunk boundaries destroy small-edit locality.
+**Decision locked:** fixed-size block diff for wire sparsity; FastCDC remains a
+storage chunker on the legacy `MSG_WRITE_BLOCKS` path. CDC boundaries shift on
+small edits and break cross-version alignment.
 
 ### Phase B — Auth (lab → shareable private deploy)
 

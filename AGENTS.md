@@ -153,10 +153,36 @@ tools = ["read_file", "write_file", "list_directory", "stat", "get_project_map",
 
 [webdav]
 url = "http://127.0.0.1:3900/webdav/00000000-0000-0000-0000-000000000001/"
+
+[build]
+# Optional: how agents should build this project and where output lands.
+command = "cargo build --release"
+dev     = "cargo watch -x run"
+artifact = "target/release/myapp"
+
+[cache]
+# Build artifact dirs that should go on fast local storage (RAM disk or SSD).
+# Agents: create the cache target, symlink, run build, copy artifact out.
+strategy = "ram_disk"    # ram_disk | local_dir | none
+size = "4GB"
+paths = [
+  "target",
+  "node_modules"
+]
 ```
 
-Agent flow: read `.proxygit` → `tools/list` on MCP → use file tools (prefer over
-shelling out to the mount).
+Agent flow when `[build]` is present:
+
+1. Read `.proxygit` → discover server, MCP, build config
+2. If `[cache]` has paths and not on local FS:
+   - Create RAM disk (if `strategy = "ram_disk"`): `hdiutil attach -nomount ram://<sectors>` → format → mount
+   - Symlink each cache path from the mount into the RAM disk
+3. Run `command` (full build) or `dev` (hot-reload)
+4. Copy `artifact` to a permanent location before cache cleanup
+5. Eject RAM disk on session end
+
+If `[cache]` is absent, build runs in-place on the network mount — expect slower
+`target/` and `node_modules/` writes.
 
 ## Security checklist for agents
 
@@ -166,3 +192,26 @@ Before exposing a server beyond localhost:
 - [ ] Ports not published to `0.0.0.0` on a public interface
 - [ ] Operator understands there is **no app-level auth** yet
 - [ ] Sample manifests use placeholders, not real network identities
+
+---
+
+## Sparse write protocol (Phase A)
+
+CLI write and WAL flush use fixed-size **64 KiB** block diffs plus a
+`HAS_BLOCKS` handshake (CLI path) so unchanged blocks are hash-only on the wire.
+
+**Why fixed-size, not FastCDC, for diffs:** content-defined boundaries shift after
+a small edit and defeat cross-version alignment. Storage still content-addresses
+blocks; the *diff* uses fixed windows.
+
+| Message | Value | Purpose |
+|---------|-------|---------|
+| `MSG_WRITE_BLOCKS_SPARSE` | `0x14` | Sparse write (hash list + data only for new/changed blocks) |
+| `MSG_HAS_BLOCKS` / `_RESP` | `0x15` / `0x16` | Block presence check |
+
+Encode/decode helpers: `crates/proxygit-common/src/protocol.rs`.  
+Bench: `scripts/bench-edit.sh` (greps `[wire]` log lines).
+
+Measured (local loopback, release, `scripts/bench-edit.sh`): **1 MiB file initial
+sparse payload 1 049 169 B; 1 KiB mid-file edit → 66 129 B** (~15.9×). Re-run the
+script after protocol changes before citing numbers.

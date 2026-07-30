@@ -10,8 +10,6 @@
 
 use std::path::{Path, PathBuf};
 
-use proxygit_common::types::ClientConfig;
-
 // ── Build Intercept Utilities (always available) ───────────────────
 
 /// Check if a path matches a known build artifact pattern.

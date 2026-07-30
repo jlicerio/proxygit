@@ -22,9 +22,51 @@ pub const MSG_SEMANTIC_SEARCH: u8 = 0x10;
 pub const MSG_SEMANTIC_SEARCH_RESP: u8 = 0x11;
 pub const MSG_CREATE_BACKUP: u8 = 0x12;
 pub const MSG_LIST_BACKUPS: u8 = 0x13;
+pub const MSG_WRITE_BLOCKS_SPARSE: u8 = 0x14;
+pub const MSG_HAS_BLOCKS: u8 = 0x15;
+pub const MSG_HAS_BLOCKS_RESP: u8 = 0x16;
 
 /// Maximum payload size per frame (64 MB) to prevent OOM DoS
 pub const MAX_PAYLOAD_SIZE: usize = 64 * 1024 * 1024;
+
+/// Log wire bytes for bench instrumentation.
+/// Greppable as `[wire] direction type=0xNN payload=N wire=N`.
+pub fn log_wire_bytes(direction: &str, msg_type: u8, msg_name: &str, payload_len: usize) {
+    let wire_bytes = 53 + payload_len;
+    tracing::info!(
+        target: "proxygit::wire",
+        direction, msg_type = format_args!("0x{msg_type:02x}"), msg_name,
+        payload_len, wire = wire_bytes,
+        "[wire] {direction} type={msg_type:#04x} ({msg_name}) payload={payload_len} wire={wire_bytes}",
+    );
+}
+
+/// Human-readable name for a protocol message type.
+pub fn msg_type_name(msg_type: u8) -> &'static str {
+    match msg_type {
+        MSG_LIST_PROJECT => "LIST_PROJECT",
+        MSG_LIST_PROJECT_RESP => "LIST_PROJECT_RESP",
+        MSG_READ_FILE => "READ_FILE",
+        MSG_READ_FILE_RESP => "READ_FILE_RESP",
+        MSG_WRITE_BLOCKS => "WRITE_BLOCKS",
+        MSG_WRITE_ACK => "WRITE_ACK",
+        MSG_STAT_FILE => "STAT_FILE",
+        MSG_STAT_FILE_RESP => "STAT_FILE_RESP",
+        MSG_BLOCK_REQUEST => "BLOCK_REQUEST",
+        MSG_BLOCK_RESP => "BLOCK_RESP",
+        MSG_ERROR => "ERROR",
+        MSG_GET_PROJECT_MAP => "GET_PROJECT_MAP",
+        MSG_GET_PROJECT_MAP_RESP => "GET_PROJECT_MAP_RESP",
+        MSG_SEMANTIC_SEARCH => "SEMANTIC_SEARCH",
+        MSG_SEMANTIC_SEARCH_RESP => "SEMANTIC_SEARCH_RESP",
+        MSG_CREATE_BACKUP => "CREATE_BACKUP",
+        MSG_LIST_BACKUPS => "LIST_BACKUPS",
+        MSG_WRITE_BLOCKS_SPARSE => "WRITE_BLOCKS_SPARSE",
+        MSG_HAS_BLOCKS => "HAS_BLOCKS",
+        MSG_HAS_BLOCKS_RESP => "HAS_BLOCKS_RESP",
+        _ => "UNKNOWN",
+    }
+}
 
 /// A decoded QUIC protocol frame.
 #[derive(Debug, Clone)]
@@ -113,6 +155,8 @@ pub async fn recv_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Frame> {
     let mut payload = vec![0u8; payload_len_us];
     reader.read_exact(&mut payload).await?;
 
+    log_wire_bytes("recv", msg_type, msg_type_name(msg_type), payload_len_us);
+
     Ok(Frame {
         msg_type,
         project_id,
@@ -131,6 +175,7 @@ pub async fn send_frame<W: AsyncWrite + Unpin>(
     payload: &[u8],
 ) -> Result<()> {
     let bytes = encode_frame(msg_type, project_id, hash, payload);
+    log_wire_bytes("send", msg_type, msg_type_name(msg_type), payload.len());
     writer.write_all(&bytes).await?;
     writer.flush().await?;
     Ok(())
@@ -161,6 +206,111 @@ pub fn decode_write_payload(payload: &[u8]) -> Result<(String, &[u8])> {
     let path = String::from_utf8(payload[2..2 + path_len].to_vec())?;
     let content = &payload[2 + path_len..];
     Ok((path, content))
+}
+
+// ── Sparse Write (MSG_WRITE_BLOCKS_SPARSE) ────────────────────────────
+
+/// A single chunk in a sparse write payload.
+///
+/// If `data` is empty, the chunk is a hash-only reference — the server
+/// is expected to already have this block in its store. If `data` is
+/// non-empty, it carries the raw bytes for this chunk.
+#[derive(Debug, Clone)]
+pub struct SparseChunk {
+    pub hash: [u8; 32],
+    pub data: Vec<u8>,
+}
+
+/// Encode a sparse write payload.
+///
+/// Wire format:
+///   [path_len:u16][path][chunk_count:u32][(hash:32B)(data_len:u32)(data)...]
+pub fn encode_sparse_write(path: &str, chunks: &[SparseChunk]) -> Vec<u8> {
+    let path_bytes = path.as_bytes();
+    let chunks_data_len: usize = chunks.iter().map(|c| 32 + 4 + c.data.len()).sum();
+    let mut buf = Vec::with_capacity(2 + path_bytes.len() + 4 + chunks_data_len);
+    buf.extend_from_slice(&(path_bytes.len() as u16).to_le_bytes());
+    buf.extend_from_slice(path_bytes);
+    buf.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
+    for chunk in chunks {
+        buf.extend_from_slice(&chunk.hash);
+        buf.extend_from_slice(&(chunk.data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&chunk.data);
+    }
+    buf
+}
+
+/// Decode a sparse write payload: returns (path, chunks)
+pub fn decode_sparse_write(payload: &[u8]) -> Result<(String, Vec<SparseChunk>)> {
+    if payload.len() < 2 {
+        bail!("Sparse write payload too short");
+    }
+    let path_len = u16::from_le_bytes(payload[0..2].try_into()?) as usize;
+    if payload.len() < 2 + path_len + 4 {
+        bail!("Sparse write payload too short for path + chunk count");
+    }
+    let path = String::from_utf8(payload[2..2 + path_len].to_vec())?;
+    let mut offset = 2 + path_len;
+    let chunk_count = u32::from_le_bytes(payload[offset..offset + 4].try_into()?) as usize;
+    offset += 4;
+
+    let mut chunks = Vec::with_capacity(chunk_count);
+    for _ in 0..chunk_count {
+        if offset + 32 + 4 > payload.len() {
+            bail!("Sparse write payload truncated at chunk {}", chunks.len());
+        }
+        let hash: [u8; 32] = payload[offset..offset + 32].try_into()?;
+        offset += 32;
+        let data_len = u32::from_le_bytes(payload[offset..offset + 4].try_into()?) as usize;
+        offset += 4;
+        if data_len > MAX_PAYLOAD_SIZE {
+            bail!("Chunk data too large: {data_len} bytes");
+        }
+        if offset + data_len > payload.len() {
+            bail!("Sparse write payload truncated at chunk {}", chunks.len());
+        }
+        let data = payload[offset..offset + data_len].to_vec();
+        offset += data_len;
+        chunks.push(SparseChunk { hash, data });
+    }
+
+    Ok((path, chunks))
+}
+
+// ── Hash List (HAS_BLOCKS handshake) ─────────────────────────────────
+
+/// Encode a list of hashes for HAS_BLOCKS query: [count:u32][hash:32B...]
+pub fn encode_hash_list(hashes: &[[u8; 32]]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(4 + hashes.len() * 32);
+    buf.extend_from_slice(&(hashes.len() as u32).to_le_bytes());
+    for h in hashes {
+        buf.extend_from_slice(h);
+    }
+    buf
+}
+
+/// Decode a hash list. Returns (count, list_of_hashes)
+pub fn decode_hash_list(data: &[u8]) -> Result<(u32, Vec<[u8; 32]>)> {
+    if data.len() < 4 {
+        bail!("Hash list too short: {} bytes", data.len());
+    }
+    let count = u32::from_le_bytes(data[0..4].try_into()?);
+    let count_us = count as usize;
+    let expected = 4 + count_us * 32;
+    if data.len() < expected {
+        bail!(
+            "Hash list truncated: expected {expected} bytes, got {}",
+            data.len()
+        );
+    }
+    let mut hashes = Vec::with_capacity(count_us);
+    for i in 0..count_us {
+        let start = 4 + i * 32;
+        let end = start + 32;
+        let hash: [u8; 32] = data[start..end].try_into()?;
+        hashes.push(hash);
+    }
+    Ok((count, hashes))
 }
 
 #[cfg(test)]
@@ -227,5 +377,48 @@ mod tests {
 
         assert_eq!(decoded_path, path);
         assert_eq!(decoded_content, binary_content.as_slice());
+    }
+
+    #[test]
+    fn test_hash_list_roundtrip() {
+        let hashes: Vec<[u8; 32]> = (0..5)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[0] = i;
+                h
+            })
+            .collect();
+
+        let encoded = encode_hash_list(&hashes);
+        let (count, decoded) = decode_hash_list(&encoded).unwrap();
+
+        assert_eq!(count, 5);
+        assert_eq!(decoded.len(), 5);
+        for i in 0..5 {
+            assert_eq!(decoded[i], hashes[i]);
+        }
+    }
+
+    #[test]
+    fn test_decode_hash_list_too_short_fails() {
+        let result = decode_hash_list(&[0u8; 3]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_hash_list_truncated_fails() {
+        // count=2 but only 1 hash provided
+        let mut data = vec![2u8, 0, 0, 0];
+        data.extend_from_slice(&[0u8; 32]); // only one hash
+        let result = decode_hash_list(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hash_list_empty() {
+        let encoded = encode_hash_list(&[]);
+        let (count, decoded) = decode_hash_list(&encoded).unwrap();
+        assert_eq!(count, 0);
+        assert!(decoded.is_empty());
     }
 }
