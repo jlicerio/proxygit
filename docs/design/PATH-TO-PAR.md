@@ -100,14 +100,17 @@ small edits and break cross-version alignment.
 
 Only after A2 is green, update README/site from “roadmap” → measured claims.
 
-### Phase F — Stretch (after A–E)
+### Phase F — Throughput (after A–E)  ✅ **F0/F1 landed**
 
-- Group-commit WAL / fewer fsyncs (throughput)
-- Block GC (already partially present — verify)
+- ✅ F0 Roadmap matrix refreshed (`ARCHITECTURE-ROADMAP.md`)
+- ✅ F1 Group-commit WAL (≤10 ms / 64 KiB) + batch `store_blocks` on sparse path
+- Group-commit WAL / fewer fsyncs (throughput) — **landed** (see roadmap F1)
+- Block GC (already partially present — verify) — `gc_orphans` exists
 - MCP protocol version bump when agent runners require it
 - Windows server / WinFSP
 - Garage/S3 backend
 - Git-aware history (real “versioned”)
+- F2 zstd sparse payloads (next optional wire win)
 
 ---
 

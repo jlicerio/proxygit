@@ -493,7 +493,11 @@ mod fuse_impl {
             // Source write: append entry to local WAL log with actual file path
             let rt = tokio::runtime::Handle::current();
             let wal_ok = rt.block_on(async {
-                match self.wal.append_entry(&rel_path, offset as u64, data).await {
+                match self
+                    .wal
+                    .append_entry_durable(&rel_path, offset as u64, data)
+                    .await
+                {
                     Ok(()) => true,
                     Err(e) => {
                         warn!("WAL write failed for {rel_path}: {e}");

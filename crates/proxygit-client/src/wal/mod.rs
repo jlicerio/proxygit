@@ -1,8 +1,8 @@
 //! Local NVMe Write-Ahead Log (WAL)
 //!
-//! Writes hit the WAL first (<0.5ms), then a background worker performs
-//! atomic rotation, pending stage recovery, patch replay over base content,
-//! FastCDC chunking, BLAKE3 hashing, and async QUIC flush to the server.
+//! Writes hit the WAL first (buffer flush only), a **group-commit** path
+//! batches `fsync` across concurrent appenders (≤10 ms or 64 KiB dirty), then a
+//! background worker rotates stages and flushes sparse writes over QUIC.
 //!
 //! WAL record format (CRC32C-framed):
 //! [magic:4B][seq:8B][path_len:2B][path][offset:8B][data_len:4B][data][crc32c:4B][magic_end:4B]
@@ -10,11 +10,11 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tracing::{info, warn};
 
 use proxygit_common::protocol::{
@@ -39,11 +39,24 @@ pub struct WalRecord {
     pub data: Vec<u8>,
 }
 
+/// Dirty-byte threshold that forces an early group-commit (matches roadmap 2.1).
+const GROUP_COMMIT_BYTES: u64 = 64 * 1024;
+/// Max delay before a pending journal is fsync'd.
+const GROUP_COMMIT_INTERVAL_MS: u64 = 10;
+
 /// A sequential Write-Ahead Log stored on local NVMe.
 pub struct LocalWal {
     wal_dir: PathBuf,
     active_journal: Arc<Mutex<File>>,
     next_seq: AtomicU64,
+    /// Bytes written since last successful group-commit fsync.
+    dirty_bytes: AtomicU64,
+    /// Set when appends are waiting for durability.
+    needs_commit: AtomicBool,
+    /// Wakes the group-commit worker (threshold hit or explicit wait).
+    commit_notify: Notify,
+    /// Oneshot waiters for the next successful group-commit.
+    commit_waiters: Mutex<Vec<tokio::sync::oneshot::Sender<Result<()>>>>,
 }
 
 impl LocalWal {
@@ -62,10 +75,17 @@ impl LocalWal {
             wal_dir,
             active_journal: Arc::new(Mutex::new(file)),
             next_seq: AtomicU64::new(0),
+            dirty_bytes: AtomicU64::new(0),
+            needs_commit: AtomicBool::new(false),
+            commit_notify: Notify::new(),
+            commit_waiters: Mutex::new(Vec::new()),
         })
     }
 
     /// Append a write operation to the WAL using the CRC32C-framed format.
+    ///
+    /// Only flushes the user-space buffer. Durability is provided by
+    /// [`group_commit`] (periodic / threshold) or [`append_entry_durable`].
     pub async fn append_entry(&self, file_path: &str, offset: u64, data: &[u8]) -> Result<()> {
         let mut journal = self.active_journal.lock().await;
         let path_bytes = file_path.as_bytes();
@@ -81,6 +101,8 @@ impl LocalWal {
         crc.update(data);
         let crc_val = crc.finalize();
 
+        let approx_len = (4 + 8 + 2 + path_bytes.len() + 8 + 4 + data.len() + 4 + 4) as u64;
+
         journal.write_all(&MAGIC_START.to_le_bytes())?;
         journal.write_all(&seq.to_le_bytes())?;
         journal.write_all(&(path_bytes.len() as u16).to_le_bytes())?;
@@ -90,9 +112,69 @@ impl LocalWal {
         journal.write_all(data)?;
         journal.write_all(&crc_val.to_le_bytes())?;
         journal.write_all(&MAGIC_END.to_le_bytes())?;
-        // user-space buffer flush; fsync deferred to rotate_for_flush
+        // user-space buffer flush; fsync deferred to group_commit / rotate
         journal.flush()?;
+
+        let dirty = self.dirty_bytes.fetch_add(approx_len, Ordering::SeqCst) + approx_len;
+        self.needs_commit.store(true, Ordering::SeqCst);
+        if dirty >= GROUP_COMMIT_BYTES {
+            self.commit_notify.notify_one();
+        }
         Ok(())
+    }
+
+    /// Append then wait until the next successful group-commit fsync.
+    pub async fn append_entry_durable(
+        &self,
+        file_path: &str,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<()> {
+        self.append_entry(file_path, offset, data).await?;
+        self.wait_group_commit().await
+    }
+
+    /// Register for the next group-commit and wake the committer.
+    pub async fn wait_group_commit(&self) -> Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut waiters = self.commit_waiters.lock().await;
+            waiters.push(tx);
+        }
+        self.needs_commit.store(true, Ordering::SeqCst);
+        self.commit_notify.notify_one();
+        match rx.await {
+            Ok(res) => res,
+            Err(_) => anyhow::bail!("group-commit waiter dropped"),
+        }
+    }
+
+    /// Fsync the active journal once and notify all waiters.
+    ///
+    /// No-op (still drains waiters with Ok) when there is nothing dirty.
+    pub async fn group_commit(&self) -> Result<()> {
+        let needs = self.needs_commit.swap(false, Ordering::SeqCst);
+        let dirty = self.dirty_bytes.swap(0, Ordering::SeqCst);
+        let result = if needs || dirty > 0 {
+            let journal = self.active_journal.lock().await;
+            journal
+                .sync_data()
+                .context("failed to group-commit fsync WAL journal")
+        } else {
+            Ok(())
+        };
+
+        let waiters = {
+            let mut w = self.commit_waiters.lock().await;
+            std::mem::take(&mut *w)
+        };
+        for tx in waiters {
+            let _ = tx.send(match &result {
+                Ok(()) => Ok(()),
+                Err(e) => Err(anyhow::anyhow!("{e:#}")),
+            });
+        }
+        result
     }
 
     /// Atomically rotate `current_journal.wal` to a stage file for flushing
@@ -112,9 +194,14 @@ impl LocalWal {
         let stage_path = self.wal_dir.join(format!("stage_{now}.wal"));
 
         journal.flush()?;
+        // Make journal durable before rename so a crash mid-rotate cannot lose
+        // the last group of appends that only lived in the page cache.
+        journal
+            .sync_data()
+            .context("failed to fsync journal before rotate")?;
         std::fs::rename(&journal_path, &stage_path)?;
 
-        // Fsync the rotated stage file to make buffered data durable on disk
+        // Fsync the rotated stage file to make rename target durable on disk
         {
             let stage_file =
                 std::fs::File::open(&stage_path).context("failed to open rotated stage file")?;
@@ -129,6 +216,17 @@ impl LocalWal {
             parent_f
                 .sync_all()
                 .context("failed to fsync WAL parent directory")?;
+        }
+
+        // Rotate implies a successful durability barrier — clear dirty + waiters.
+        self.dirty_bytes.store(0, Ordering::SeqCst);
+        self.needs_commit.store(false, Ordering::SeqCst);
+        let waiters = {
+            let mut w = self.commit_waiters.lock().await;
+            std::mem::take(&mut *w)
+        };
+        for tx in waiters {
+            let _ = tx.send(Ok(()));
         }
 
         *journal = OpenOptions::new()
@@ -356,19 +454,47 @@ fn build_sparse_diff(old: &[u8], new: &[u8], block_size: usize) -> Vec<SparseChu
         .collect()
 }
 
+/// Background group-commit worker: fsync the active journal every
+/// [`GROUP_COMMIT_INTERVAL_MS`] or sooner when dirty bytes hit the threshold.
+pub fn start_group_commit_worker(wal: Arc<LocalWal>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(GROUP_COMMIT_INTERVAL_MS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = wal.commit_notify.notified() => {}
+            }
+            if let Err(e) = wal.group_commit().await {
+                tracing::error!("WAL group-commit failed: {e:#}");
+            }
+        }
+    })
+}
+
 /// Background worker that periodically flushes WAL records over QUIC to the server.
+///
+/// Also starts the group-commit worker so appends become durable within ~10 ms.
 pub fn start_wal_flush_worker(
     wal: Arc<LocalWal>,
     conn: quinn::Connection,
     project_id: ProjectId,
     cache_dir: PathBuf,
 ) -> tokio::task::JoinHandle<()> {
+    let _group_commit = start_group_commit_worker(wal.clone());
     tokio::spawn(async move {
         let pool = crate::StreamPool::new(conn, 4);
         pool.prewarm().await;
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
         loop {
             interval.tick().await;
+
+            // Durability barrier before rotate (also drains group-commit waiters).
+            if let Err(e) = wal.group_commit().await {
+                tracing::error!("WAL pre-rotate group-commit failed: {e:#}");
+                continue;
+            }
 
             // 1. Rotate current journal if it contains writes
             let _ = wal.rotate_for_flush().await;
@@ -684,5 +810,37 @@ mod tests {
         assert_eq!(records_out[1].seq, 99);
         assert_eq!(records_out[1].path, "y.rs");
         assert_eq!(records_out[1].data, b"goodbye");
+    }
+
+    #[test]
+    fn test_group_commit_notifies_waiters() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let wal = Arc::new(LocalWal::new(temp_dir.path()).unwrap());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let w = wal.clone();
+            let committer = tokio::spawn(async move {
+                // Simulate group-commit worker reacting to notify
+                w.commit_notify.notified().await;
+                w.group_commit().await.unwrap();
+            });
+            wal.append_entry("d.rs", 0, b"durable").await.unwrap();
+            wal.wait_group_commit().await.unwrap();
+            committer.await.unwrap();
+            assert_eq!(wal.dirty_bytes.load(Ordering::SeqCst), 0);
+            assert!(!wal.needs_commit.load(Ordering::SeqCst));
+        });
+    }
+
+    #[test]
+    fn test_append_entry_durable_with_worker() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let wal = Arc::new(LocalWal::new(temp_dir.path()).unwrap());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let _gc = start_group_commit_worker(wal.clone());
+            wal.append_entry_durable("z.rs", 0, b"z").await.unwrap();
+            assert_eq!(wal.dirty_bytes.load(Ordering::SeqCst), 0);
+        });
     }
 }

@@ -713,11 +713,15 @@ pub async fn handle_write_blocks_sparse(
         }
     }
 
-    // 1. Store new blocks (chunks with non-empty data)
-    for chunk in &sparse_chunks {
-        if !chunk.data.is_empty() {
-            state.block_store.store_block(&chunk.hash, &chunk.data)?;
+    // 1. Store new blocks in one staged batch (amortized parent fsync).
+    {
+        let mut new_blocks: Vec<([u8; 32], &[u8])> = Vec::new();
+        for chunk in &sparse_chunks {
+            if !chunk.data.is_empty() {
+                new_blocks.push((chunk.hash, chunk.data.as_slice()));
+            }
         }
+        state.block_store.store_blocks(&new_blocks)?;
     }
 
     // 2. Build ChunkResult list for indexing
