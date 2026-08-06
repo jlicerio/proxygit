@@ -67,8 +67,13 @@ impl BlockStore {
             return Ok(());
         }
 
+        // Dedupe by hash: repetitive files list the same 64 KiB window many times.
         let mut pending: Vec<([u8; 32], &[u8])> = Vec::with_capacity(blocks.len());
+        let mut seen: HashSet<[u8; 32]> = HashSet::new();
         for (hash, data) in blocks {
+            if !seen.insert(*hash) {
+                continue;
+            }
             if !self.has_block(hash) {
                 pending.push((*hash, *data));
             }
@@ -228,6 +233,20 @@ mod tests {
         // Idempotent re-store
         bs.store_blocks(&[(h1, b"alpha" as &[u8])]).unwrap();
         assert!(bs.has_block(&h1));
+    }
+
+    #[test]
+    fn store_blocks_dedupes_duplicate_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let bs = BlockStore::new(dir.path()).unwrap();
+        let h = *blake3::hash(b"same").as_bytes();
+        bs.store_blocks(&[
+            (h, b"same" as &[u8]),
+            (h, b"same" as &[u8]),
+            (h, b"same" as &[u8]),
+        ])
+        .unwrap();
+        assert_eq!(bs.get_block(&h).unwrap(), b"same");
     }
 
     #[test]

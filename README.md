@@ -31,7 +31,7 @@ writes (see limits).
 
 ### Honest limits (MVP)
 
-- **Sparse writes are 64 KiB block-aligned.** CLI write + WAL flush send only changed fixed-size blocks (plus a `HAS_BLOCKS` handshake on the CLI path). Not byte-granular VCDIFF; a 1‑byte edit still ships up to one 64 KiB block.
+- **Sparse writes are 64 KiB block-aligned** with optional **zstd** on chunk data (`SPARSE_FLAG_ZSTD`, default on; `PROXYGIT_SPARSE_ZSTD=0` disables). Hashes stay BLAKE3 of plain bytes. Not byte-granular VCDIFF.
 - **`content_search` is lexical feature-hash (default), not a language model.** Token bag → 384-d vectors (`PROXYGIT_EMBEDDING=features`). Set `=hash` for the old BLAKE3 identity mock. Legacy MCP name `semantic_search` is an alias. ONNX/BGE remains optional later.
 - **“Versioned” ≠ git history.** Content-addressed blocks + tarball backups, not branches/merges.
 - **Auth is optional and layered.** Unset token + unset mTLS CA = open trusted-network mode. `PROXYGIT_TOKEN` → QUIC `MSG_AUTH` + WebDAV Bearer. `PROXYGIT_MTLS_CA` → require CA-signed client cert (`proxygit-client gen-mtls`).
@@ -39,17 +39,17 @@ writes (see limits).
 
 ### Sparse write microbench (loopback, release)
 
-`scripts/bench-edit.sh` — 1 MiB file, then a 1 KiB mid-file edit:
+`scripts/bench-edit.sh` — 1 MiB highly-repetitive fixture, then a 1 KiB mid-file edit
+(release, loopback, zstd on):
 
 | Step | `WRITE_BLOCKS_SPARSE` payload | vs file |
 |------|-------------------------------|---------|
-| Initial write | 1 049 169 B | ~100% |
-| 1 KiB edit rewrite | **66 129 B** | **~6.3%** (~15.9× smaller) |
+| Initial write | **1 058 B** | ~0.1% |
+| 1 KiB edit rewrite | **627 B** | ≪1% |
 
-Includes fixed 64 KiB changed block + per-block hash headers for the whole file.
-Handshake (`HAS_BLOCKS`) is extra (~0.5–1 KiB) and not in the payload column.
-The same script also prints rsync/cp (and scp when loopback SSH works) whole-file baselines.
-Re-run the script after protocol changes before citing new numbers.
+Without zstd the same path was ~1.05 MB / ~66 KB (hash list + one 64 KiB block).
+Real source trees compress less than the all-`A` fixture — re-run the script on your
+workload before citing numbers. Handshake (`HAS_BLOCKS`) is extra and not in the payload column.
 
 ### What it is not
 
@@ -67,7 +67,7 @@ Re-run the script after protocol changes before citing new numbers.
 | WebDAV native mount (`:3900`) | ✅ |
 | FUSE mount | Optional (`--features fuse`, macOS/Linux) |
 | Content-addressed block storage (FastCDC + BLAKE3) | ✅ |
-| Sparse wire write (64 KiB block diff + `HAS_BLOCKS`) | ✅ |
+| Sparse wire write (64 KiB + `HAS_BLOCKS` + zstd) | ✅ default on (`PROXYGIT_SPARSE_ZSTD`) |
 | Content search (`content_search`) | ✅ feature-hash embeddings (default); `hash` mock optional |
 | ONNX / BGE language-model embeddings | ❌ roadmap |
 | Optimistic concurrency (`expected_tree_hash`) | ✅ optional `PROXYGIT_WRITE_CONFLICT=reject_stale` (+ auto base hash) |
@@ -213,6 +213,7 @@ agents can discover `server`, `uuid`, and MCP endpoint without hard-coding hosts
 | `PROXYGIT_WRITE_CONFLICT` | `last_writer_wins` | `reject_stale` → expected-hash checks (+ auto base) |
 | `PROXYGIT_EXPECTED_TREE_HASH` | unset | CLI override for conditional write (64 hex) |
 | `PROXYGIT_EMBEDDING` | `features` | `features` = token bag; `hash` = BLAKE3 mock |
+| `PROXYGIT_SPARSE_ZSTD` | on | `0`/`false`/`off` disables zstd on sparse chunk data |
 
 Client defaults (overridable later via config file / flags): mount and cache under
 `/tmp/proxygit/…`, server `127.0.0.1:8080`.

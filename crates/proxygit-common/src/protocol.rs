@@ -31,6 +31,31 @@ pub const MSG_AUTH_FAIL: u8 = 0x19;
 
 /// Sparse-write flag: payload includes a 32-byte expected tree_hash after flags.
 pub const SPARSE_FLAG_EXPECTED_HASH: u8 = 0x01;
+/// Sparse-write flag: each non-empty chunk `data` blob is zstd-compressed.
+/// Content hashes remain BLAKE3 of the **uncompressed** bytes.
+pub const SPARSE_FLAG_ZSTD: u8 = 0x02;
+
+/// Whether sparse write payloads should zstd-compress chunk data.
+/// Default **on**. Set `PROXYGIT_SPARSE_ZSTD=0|false|off` to disable.
+pub fn sparse_zstd_enabled() -> bool {
+    match std::env::var("PROXYGIT_SPARSE_ZSTD") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !(v.is_empty() || v == "0" || v == "false" || v == "off" || v == "no")
+        }
+        Err(_) => true,
+    }
+}
+
+fn zstd_compress_chunk(data: &[u8]) -> Result<Vec<u8>> {
+    // level 3: good ratio / low CPU for 64 KiB source blocks
+    zstd::bulk::compress(data, 3).map_err(|e| anyhow::anyhow!("zstd compress: {e}"))
+}
+
+fn zstd_decompress_chunk(data: &[u8], max_decompressed: usize) -> Result<Vec<u8>> {
+    zstd::bulk::decompress(data, max_decompressed)
+        .map_err(|e| anyhow::anyhow!("zstd decompress: {e}"))
+}
 
 /// Maximum payload size per frame (64 MB) to prevent OOM DoS
 pub const MAX_PAYLOAD_SIZE: usize = 64 * 1024 * 1024;
@@ -236,6 +261,11 @@ pub struct SparseChunk {
 ///   [path_len:u16][path][flags:u8]
 ///   if flags & SPARSE_FLAG_EXPECTED_HASH: [expected_tree_hash:32B]
 ///   [chunk_count:u32][(hash:32B)(data_len:u32)(data)...]
+///
+/// When zstd is enabled (`PROXYGIT_SPARSE_ZSTD`, default on) and any chunk has
+/// non-empty data, `SPARSE_FLAG_ZSTD` is set and every non-empty `data` blob is
+/// zstd-compressed. Empty data (hash-only refs) stays empty. Hashes are always
+/// of uncompressed content.
 pub fn encode_sparse_write(
     path: &str,
     chunks: &[SparseChunk],
@@ -246,7 +276,44 @@ pub fn encode_sparse_write(
     if expected_tree_hash.is_some() {
         flags |= SPARSE_FLAG_EXPECTED_HASH;
     }
-    let chunks_data_len: usize = chunks.iter().map(|c| 32 + 4 + c.data.len()).sum();
+
+    let want_zstd = sparse_zstd_enabled() && chunks.iter().any(|c| !c.data.is_empty());
+    let mut encoded_data: Vec<Vec<u8>> = Vec::with_capacity(chunks.len());
+    let mut use_zstd = false;
+    if want_zstd {
+        let mut ok = true;
+        let mut compressed_bytes = 0usize;
+        let mut plain_bytes = 0usize;
+        for chunk in chunks {
+            plain_bytes += chunk.data.len();
+            if chunk.data.is_empty() {
+                encoded_data.push(Vec::new());
+            } else {
+                match zstd_compress_chunk(&chunk.data) {
+                    Ok(c) => {
+                        compressed_bytes += c.len();
+                        encoded_data.push(c);
+                    }
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        }
+        // Only advertise zstd when it actually shrinks payload data.
+        if ok && compressed_bytes < plain_bytes {
+            use_zstd = true;
+            flags |= SPARSE_FLAG_ZSTD;
+        } else {
+            encoded_data.clear();
+        }
+    }
+    if !use_zstd {
+        encoded_data = chunks.iter().map(|c| c.data.clone()).collect();
+    }
+
+    let chunks_data_len: usize = encoded_data.iter().map(|d| 32 + 4 + d.len()).sum();
     let expected_len = if expected_tree_hash.is_some() { 32 } else { 0 };
     let mut buf = Vec::with_capacity(2 + path_bytes.len() + 1 + expected_len + 4 + chunks_data_len);
     buf.extend_from_slice(&(path_bytes.len() as u16).to_le_bytes());
@@ -256,15 +323,19 @@ pub fn encode_sparse_write(
         buf.extend_from_slice(h);
     }
     buf.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
-    for chunk in chunks {
+    for (chunk, data) in chunks.iter().zip(encoded_data.iter()) {
         buf.extend_from_slice(&chunk.hash);
-        buf.extend_from_slice(&(chunk.data.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&chunk.data);
+        buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(data);
     }
     buf
 }
 
-/// Decode a sparse write payload: returns (path, expected_tree_hash, chunks)
+/// Decode a sparse write payload: returns (path, expected_tree_hash, chunks).
+///
+/// When `SPARSE_FLAG_ZSTD` is set, non-empty chunk data is zstd-decompressed
+/// before return. Decompressed size is capped at one sparse block (64 KiB) plus
+/// small slack — larger values are rejected.
 pub fn decode_sparse_write(payload: &[u8]) -> Result<(String, Option<[u8; 32]>, Vec<SparseChunk>)> {
     if payload.len() < 2 {
         bail!("Sparse write payload too short");
@@ -295,6 +366,10 @@ pub fn decode_sparse_write(payload: &[u8]) -> Result<(String, Option<[u8; 32]>, 
     let chunk_count = u32::from_le_bytes(payload[offset..offset + 4].try_into()?) as usize;
     offset += 4;
 
+    let zstd = flags & SPARSE_FLAG_ZSTD != 0;
+    // Sparse wire uses 64 KiB fixed blocks; allow a little headroom.
+    const MAX_CHUNK_PLAIN: usize = 128 * 1024;
+
     let mut chunks = Vec::with_capacity(chunk_count);
     for _ in 0..chunk_count {
         if offset + 32 + 4 > payload.len() {
@@ -310,8 +385,15 @@ pub fn decode_sparse_write(payload: &[u8]) -> Result<(String, Option<[u8; 32]>, 
         if offset + data_len > payload.len() {
             bail!("Sparse write payload truncated at chunk {}", chunks.len());
         }
-        let data = payload[offset..offset + data_len].to_vec();
+        let raw = &payload[offset..offset + data_len];
         offset += data_len;
+        let data = if raw.is_empty() {
+            Vec::new()
+        } else if zstd {
+            zstd_decompress_chunk(raw, MAX_CHUNK_PLAIN)?
+        } else {
+            raw.to_vec()
+        };
         chunks.push(SparseChunk { hash, data });
     }
 
@@ -461,5 +543,65 @@ mod tests {
         let (count, decoded) = decode_hash_list(&encoded).unwrap();
         assert_eq!(count, 0);
         assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn test_sparse_write_zstd_roundtrip_and_hash() {
+        std::env::remove_var("PROXYGIT_SPARSE_ZSTD"); // default on
+        let plain = vec![b'A'; 80_000];
+        let hash = *blake3::hash(&plain).as_bytes();
+        let chunks = vec![
+            SparseChunk {
+                hash,
+                data: plain.clone(),
+            },
+            SparseChunk {
+                hash: [9u8; 32],
+                data: Vec::new(), // hash-only ref
+            },
+        ];
+        let expected = [7u8; 32];
+        let encoded = encode_sparse_write("src/a.rs", &chunks, Some(&expected));
+        // flags byte sits after path
+        let path_len = u16::from_le_bytes(encoded[0..2].try_into().unwrap()) as usize;
+        let flags = encoded[2 + path_len];
+        assert_ne!(flags & SPARSE_FLAG_ZSTD, 0, "zstd flag should be set");
+        assert_ne!(flags & SPARSE_FLAG_EXPECTED_HASH, 0);
+
+        // Compressed payload should beat raw for highly repetitive data
+        let raw_len = plain.len();
+        assert!(
+            encoded.len() < raw_len,
+            "encoded {} should be < raw block {}",
+            encoded.len(),
+            raw_len
+        );
+
+        let (path, exp, decoded) = decode_sparse_write(&encoded).unwrap();
+        assert_eq!(path, "src/a.rs");
+        assert_eq!(exp, Some(expected));
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0].data, plain);
+        assert_eq!(decoded[0].hash, hash);
+        assert!(decoded[1].data.is_empty());
+    }
+
+    #[test]
+    fn test_sparse_write_zstd_disabled() {
+        std::env::set_var("PROXYGIT_SPARSE_ZSTD", "0");
+        let plain = b"hello sparse".to_vec();
+        let hash = *blake3::hash(&plain).as_bytes();
+        let chunks = vec![SparseChunk {
+            hash,
+            data: plain.clone(),
+        }];
+        let encoded = encode_sparse_write("t.txt", &chunks, None);
+        let path_len = u16::from_le_bytes(encoded[0..2].try_into().unwrap()) as usize;
+        let flags = encoded[2 + path_len];
+        assert_eq!(flags & SPARSE_FLAG_ZSTD, 0);
+        let (p, _, dec) = decode_sparse_write(&encoded).unwrap();
+        assert_eq!(p, "t.txt");
+        assert_eq!(dec[0].data, plain);
+        std::env::remove_var("PROXYGIT_SPARSE_ZSTD");
     }
 }

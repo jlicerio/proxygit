@@ -26,14 +26,14 @@ Consolidated from Codex Sol research, Codex CLI review, and OMP review.
 | 🔵 P3 | Sequential block reads (N syscalls) | open | Read throughput |
 | ~~P3~~ | No GC for orphaned blocks | ✅ partial | `gc_orphans` present; wire into ops |
 | 🔵 P3 | Hardcoded `mode = 0o644` | open | Permission fidelity |
-| 🔵 P3 | zstd sparse payloads (A3) | open | Next wire win after F1 |
+| ~~P3~~ | zstd sparse payloads (A3/F2) | ✅ fixed (F2) | `SPARSE_FLAG_ZSTD`; default on |
 | 🔵 P3 | ONNX / BGE embeddings | open | Optional; feature-hash is default |
 | 🔵 P3 | Multi-tenant RBAC | open | Token + mTLS cover trusted multi-host |
 | 🔵 P3 | CRDT / auto-merge | open | `reject_stale` + auto base is enough for agents |
 | 🔵 P3 | Garage/S3 backend | open | Local blocks until multi-disk ops |
 | 🔵 P3 | Git-aware history / WinFSP | open | Product stretch |
 
-## Already Fixed (historical + F1)
+## Already Fixed (historical + F1/F2)
 
 | Fix | Evidence |
 |-----|----------|
@@ -48,6 +48,8 @@ Consolidated from Codex Sol research, Codex CLI review, and OMP review.
 | Batch `store_blocks` + sparse path | **F1** `block_store/mod.rs`, sparse handler |
 | Group-commit WAL (10 ms / 64 KiB) | **F1** `wal/mod.rs` `start_group_commit_worker` |
 | FUSE waits group-commit | **F1** `append_entry_durable` |
+| Zstd sparse chunk payloads | **F2** `SPARSE_FLAG_ZSTD` + `PROXYGIT_SPARSE_ZSTD` |
+| `store_blocks` hash dedupe | **F2** (identical windows in one batch) |
 
 ## Phase F — Throughput (in progress / next)
 
@@ -64,8 +66,10 @@ This document.
 - Integration: existing smoke / auth / mtls / GC suite green.
 - Observable: sparse write of N new blocks does one parent-dir fsync set, not 2N.
 
-### F2 — zstd on sparse payloads (next)
-Optional wire compression after F1. Update `bench-edit.sh` measured claims.
+### F2 — zstd on sparse payloads ✅
+- Per-chunk zstd when it shrinks the batch; flag on wire; hashes remain plain BLAKE3.
+- Kill-switch: `PROXYGIT_SPARSE_ZSTD=0`. Server always accepts flagged payloads.
+- Bench (repetitive 1 MiB fixture): **~1.0 KB first / ~0.6 KB edit** vs ~1 MB / ~66 KB pre-zstd.
 
 ### F3 — MCP protocol version bump
 Only when a real agent runner rejects `2024-11-05`.
@@ -109,11 +113,11 @@ tc qdisc add dev eth0 root netem delay 50ms 15ms 1%
 
 | Metric | Was | Now / Target | How |
 |--------|-----|--------------|-----|
-| Sparse 1 KiB edit payload | full file | **~66 KB** measured | Phase A + bench-edit |
+| Sparse 1 KiB edit payload | full file | **~0.6 KB** (zstd) / ~66 KB (raw) | Phase A + F2 + bench-edit |
 | Block writes/1 MB (sparse new) | 2 fsyncs × N blocks | **N file + ≤N parent** fsyncs batched | F1 `store_blocks` |
 | WAL append durability | none until rotate / per-write | **≤10 ms group-commit** | F1 |
 | MCP project map | N+1 RTTs | 1 RTT | `get_project_map` |
-| Bandwidth further | 64 KiB floor | zstd / VCDIFF later | F2+ |
+| Bandwidth further | 64 KiB floor + zstd | VCDIFF / dict zstd later | optional |
 
 ## Document History
 
@@ -125,3 +129,4 @@ tc qdisc add dev eth0 root netem delay 50ms 15ms 1%
 | 2026-07-29 | Hermes Agent | Consolidation + P0 fixes deployed |
 | 2026-07-30 | Agent | PATH-TO-PAR A–E + stretch (auth/mTLS/search/bench) |
 | 2026-07-30 | Agent | **F0** matrix refresh; **F1** group-commit WAL + batch `store_blocks` |
+| 2026-08-05 | Agent | **F2** zstd sparse payloads; store_blocks hash dedupe |

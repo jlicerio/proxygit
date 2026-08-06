@@ -195,23 +195,28 @@ Before exposing a server beyond localhost:
 
 ---
 
-## Sparse write protocol (Phase A)
+## Sparse write protocol (Phase A + F2 zstd)
 
 CLI write and WAL flush use fixed-size **64 KiB** block diffs plus a
 `HAS_BLOCKS` handshake (CLI path) so unchanged blocks are hash-only on the wire.
+Non-empty chunk payloads are **zstd-compressed** when it shrinks the batch
+(`SPARSE_FLAG_ZSTD`); disable with `PROXYGIT_SPARSE_ZSTD=0`.
 
 **Why fixed-size, not FastCDC, for diffs:** content-defined boundaries shift after
 a small edit and defeat cross-version alignment. Storage still content-addresses
 blocks; the *diff* uses fixed windows.
 
-| Message | Value | Purpose |
-|---------|-------|---------|
-| `MSG_WRITE_BLOCKS_SPARSE` | `0x14` | Sparse write (hash list + data only for new/changed blocks) |
-| `MSG_HAS_BLOCKS` / `_RESP` | `0x15` / `0x16` | Block presence check |
+|Message|Value|Purpose|
+|---|---|---|
+|`MSG_WRITE_BLOCKS_SPARSE`|`0x14`|Sparse write (hash list + data only for new/changed blocks)|
+|`MSG_HAS_BLOCKS` / `_RESP`|`0x15` / `0x16`|Block presence check|
+|`SPARSE_FLAG_EXPECTED_HASH`|`0x01`|Optional optimistic base hash|
+|`SPARSE_FLAG_ZSTD`|`0x02`|Chunk data is zstd (hashes still plain)|
 
-Encode/decode helpers: `crates/proxygit-common/src/protocol.rs`.  
+Encode/decode helpers: `crates/proxygit-common/src/protocol.rs`.
 Bench: `scripts/bench-edit.sh` (greps `[wire]` log lines).
 
-Measured (local loopback, release, `scripts/bench-edit.sh`): **1 MiB file initial
-sparse payload 1 049 169 B; 1 KiB mid-file edit → 66 129 B** (~15.9×). Re-run the
-script after protocol changes before citing numbers.
+Measured (local loopback, release, repetitive 1 MiB fixture, zstd on):
+**initial sparse payload 1 058 B; 1 KiB mid-file edit → 627 B**.
+Pre-zstd baseline on the same path was ~1.05 MB / ~66 KB. Re-run after protocol
+changes before citing numbers.

@@ -27,6 +27,7 @@ base64 = "0.22"
 tempfile = "3.10"
 tar = "0.4"
 flate2 = "1.0"
+zstd = "0.13"
 
 [workspace.package]
 version = "0.1.0"

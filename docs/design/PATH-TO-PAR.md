@@ -55,7 +55,7 @@ with the current `MSG_WRITE_BLOCKS` shape, or do we need a new message type?
 | A0 wire logging | ✅ | `log_wire_bytes` + `scripts/bench-edit.sh` |
 | A1 sparse protocol | ✅ | `0x14` / `0x15` / `0x16`; server handlers |
 | A2 WAL + CLI sparse | ✅ | Fixed 64 KiB diff (not CDC-for-diff) |
-| A3 zstd payloads | ⬜ optional | |
+| A3 zstd payloads | ✅ **F2** | `SPARSE_FLAG_ZSTD`; default on; env kill-switch |
 
 **Decision locked:** fixed-size block diff for wire sparsity; FastCDC remains a
 storage chunker on the legacy `MSG_WRITE_BLOCKS` path. CDC boundaries shift on
@@ -100,17 +100,16 @@ small edits and break cross-version alignment.
 
 Only after A2 is green, update README/site from “roadmap” → measured claims.
 
-### Phase F — Throughput (after A–E)  ✅ **F0/F1 landed**
+### Phase F — Throughput (after A–E)  ✅ **F0/F1/F2 landed**
 
 - ✅ F0 Roadmap matrix refreshed (`ARCHITECTURE-ROADMAP.md`)
 - ✅ F1 Group-commit WAL (≤10 ms / 64 KiB) + batch `store_blocks` on sparse path
-- Group-commit WAL / fewer fsyncs (throughput) — **landed** (see roadmap F1)
+- ✅ F2 zstd sparse chunk payloads (`SPARSE_FLAG_ZSTD`, default on)
 - Block GC (already partially present — verify) — `gc_orphans` exists
 - MCP protocol version bump when agent runners require it
 - Windows server / WinFSP
 - Garage/S3 backend
 - Git-aware history (real “versioned”)
-- F2 zstd sparse payloads (next optional wire win)
 
 ---
 

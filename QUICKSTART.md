@@ -289,6 +289,7 @@ paths    = ["target", "node_modules"]
 | `PROXYGIT_WRITE_CONFLICT` | `last_writer_wins` | `reject_stale` enables expected-hash checks; client auto-stats base when unset |
 | `PROXYGIT_EXPECTED_TREE_HASH` | unset | Client CLI: 64-hex base hash override for conditional write |
 | `PROXYGIT_EMBEDDING` | `features` | Server: `features` (token bag) or `hash` (BLAKE3 mock) |
+| `PROXYGIT_SPARSE_ZSTD` | on | `0`/`false`/`off` disables zstd on sparse chunk bytes |
 
 ## 8. Feature checklist
 

@@ -194,8 +194,8 @@ proxygit-client mcp   $SERVER $PROJECT   # agent tools on stdio</pre>
     <section>
       <h2>Honest MVP limits</h2>
       <ul>
-        <li><strong>Sparse writes are 64&nbsp;KiB block-aligned.</strong> Unchanged blocks are hash-only on the wire after <code>HAS_BLOCKS</code>; not byte-granular VCDIFF. A 1‑byte edit can still send one full 64&nbsp;KiB block.</li>
-        <li><strong>Measured:</strong> 1&nbsp;MiB file → ~1.05&nbsp;MB first sparse write; 1&nbsp;KiB mid-file edit → <strong>66&nbsp;KB</strong> payload (~16×) via <code>scripts/bench-edit.sh</code>.</li>
+        <li><strong>Sparse writes are 64&nbsp;KiB block-aligned</strong> with optional <strong>zstd</strong> on chunk data (<code>SPARSE_FLAG_ZSTD</code>, default on; <code>PROXYGIT_SPARSE_ZSTD=0</code> disables). Hashes stay BLAKE3 of plain bytes.</li>
+        <li><strong>Measured</strong> (repetitive 1&nbsp;MiB fixture, release loopback, zstd on): first sparse write <strong>~1&nbsp;KB</strong>; 1&nbsp;KiB mid-file edit <strong>~0.6&nbsp;KB</strong> via <code>scripts/bench-edit.sh</code>. Pre-zstd baseline ~1.05&nbsp;MB / ~66&nbsp;KB.</li>
         <li><strong><code>content_search</code> is feature-hash by default</strong> — token bag → 384-d vectors (<code>PROXYGIT_EMBEDDING=features</code>), not a language model. <code>=hash</code> keeps the BLAKE3 identity mock. Legacy alias: <code>semantic_search</code>.</li>
         <li><strong>Not git versioning</strong> — content-addressed storage + tarball backups, not branches/merges.</li>
         <li><strong>Optional auth layers:</strong> bearer (<code>PROXYGIT_TOKEN</code> / <code>gen-token</code>) and mTLS (<code>PROXYGIT_MTLS_CA</code> / <code>gen-mtls</code>); optional <code>reject_stale</code> conflicts with auto base-hash. Default remains open + last-writer-wins.</li>
